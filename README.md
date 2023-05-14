@@ -1,2 +1,2 @@
-# easy-video-shooter
+# easy-video-shooter(evs)
 簡易VJソフト
