@@ -129,3 +129,21 @@ function changeScene(opacity, duration) {
   });
 
 }
+
+window.onload = function () {
+  var os = platform.os.toString().toLowerCase();
+  console.log(os);
+  text = null;
+  if (os.indexOf("windows") !== -1) {
+    text = "YouTubeの再生画面で Ctrlキー + X";
+  } else if (os.indexOf("os x") !== -1) {
+    text = "YouTubeの再生画面で controlキー(⌃) + X";
+  } else {
+    text = "お使いのOSには対応していません";
+  }
+  // ページ読み込み時に実行したい処理
+  Swal.fire({
+    title: "使用方法",
+    text: text,
+  });
+};
