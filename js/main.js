@@ -1,5 +1,7 @@
 var delay_tuned = true;
-var ahead_time = 200; //先読み(ms)
+videoInfo = null;
+receive_event_unixtime = 0;
+// var ahead_time = 200; //先読み(ms)
 
 // 2. This code loads the IFrame Player API code asynchronously.
 var tag = document.createElement("script");
@@ -13,8 +15,8 @@ firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
 var player;
 function onYouTubeIframeAPIReady() {
   player = new YT.Player("player", {
-    width: "720",
-    height: "480",
+    width: "768",
+    height: "432",
     videoId: "M7lc1UVf-VE",
     events: {
       onReady: onPlayerReady,
@@ -63,15 +65,13 @@ var receive_event_unixtime = -1;
  * 【VJ側】画面切替
  */
 var observer = new MutationObserver(function () {
-
-  
-  changeScene(0, "0.5s");
+  changeScene(0, "0.2s");
   delay_tuned = false;
-  const videoInfo = JSON.parse(document.getElementById("videoInfo").value);
+  videoInfo = JSON.parse(document.getElementById("videoInfo").value);
   receive_event_unixtime = videoInfo.systemUnixTime; // 発火時の日時を取得
   player.loadVideoById(
     videoInfo.videoId,
-    ahead_time / 1000 + videoInfo.targetTime
+    videoInfo.targetTime
   );
 });
 
@@ -97,10 +97,10 @@ function calDelayAndFixView() {
   if (!delay_tuned) {
     dt = now_milsecond() - receive_event_unixtime; // 遅延時間
     console.log("再生時間からLoadまでに要した時間 : " + dt);
-    player.seekTo((dt) / 1000 + player.getCurrentTime())
-    }
-    delay_tuned = true;
-    setTimeout(changeScene(1, "2s"), 3000);
+    buffer(dt);
+  }
+  delay_tuned = true;
+
 }
 
 /**
@@ -120,7 +120,7 @@ function now_milsecond() {
  * @param {*} opacity 透明度 0:暗転 1:明転
  * @param {*} duration 切り替え時間(s)
  */
-function changeScene(opacity, duration) {  
+function changeScene(opacity, duration) {
   $(".box").css({
     "transition-duration": duration,
     "transition-timing-function": "liner",
@@ -147,3 +147,19 @@ window.onload = function () {
     text: text,
   });
 };
+
+// 追加開発用
+/**
+ * 1000ms超えた場合は、シークに時間を様要すため4000ms後にロードしてタイマーで発火させる
+ */
+function buffer(dt) {
+  waitTime = dt * 1.5;
+  shiftMilisecond = dt + waitTime;
+  player.seekTo(shiftMilisecond / 1000 + videoInfo.targetTime);
+  player.pauseVideo();
+  setTimeout(() => {
+    player.playVideo()
+    changeScene(1, "2s")
+  }, waitTime)
+  
+}
