@@ -143,7 +143,7 @@ window.onload = function () {
   }
   // ページ読み込み時に実行したい処理
   Swal.fire({
-    imageUrl: '../img/announce.png',
+    imageUrl: 'https://github.com/fuwa10/evs/blob/main/img/announce.png?raw=true',
     imageHeight: 130,
     imageAlt: 'HowToUse',
     text: text,
