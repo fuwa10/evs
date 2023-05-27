@@ -1,7 +1,7 @@
 var delay_tuned = true;
 videoInfo = null;
 receive_event_unixtime = 0;
-// var ahead_time = 200; //先読み(ms)
+var ahead_time = 1.2; //先読み(s)
 
 // 2. This code loads the IFrame Player API code asynchronously.
 var tag = document.createElement("script");
@@ -25,7 +25,7 @@ function onYouTubeIframeAPIReady() {
     playerVars: {
       rel: 0, // 関連動画の有無(default:1)
       showinfo: 0, // 動画情報表示(default:1)
-      controls: 0, // コントロール有無(default:1)
+      controls: 1, // コントロール有無(default:1)
       cc_load_policy: 0, // 字幕有無(1:ON、defaultはユーザー設定)
       iv_load_policy: 3, // アノテーション有無(default:1, 3で無効)
     },
@@ -47,8 +47,6 @@ function onPlayerReady(event) {
 
 var done = false;
 function onPlayerStateChange(event) {
-  // console.log(delay_tuned);
-  // console.log(event.data);
   if (event.data == YT.PlayerState.ENDED) {
     player.playVideo();
   }
@@ -71,7 +69,7 @@ var observer = new MutationObserver(function () {
   receive_event_unixtime = videoInfo.systemUnixTime; // 発火時の日時を取得
   player.loadVideoById(
     videoInfo.videoId,
-    videoInfo.targetTime
+    videoInfo.targetTime + ahead_time
   );
 });
 
@@ -93,13 +91,30 @@ observer.observe(elem, config2);
  * Videoステータスが再読み込み→再生になった時に動作
  */
 function calDelayAndFixView() {
-  // 遅延処理
   if (!delay_tuned) {
-    dt = now_milsecond() - receive_event_unixtime; // 遅延時間
-    console.log("再生時間からLoadまでに要した時間 : " + dt);
-    buffer(dt);
+    player.pauseVideo();
+    testWait = receive_event_unixtime + ahead_time * 1000 - now_milsecond();
+    if (testWait >= 0) {
+      setTimeout(() => {
+        player.playVideo()
+        changeScene(1, "2s")
+      }, testWait)
+    } else { 
+      console.log("先読みの再生時間を過ぎました");
+      console.log(-1 * testWait);
+      buffer(-1 * testWait);
+    }
+
   }
   delay_tuned = true;
+
+  // // 遅延処理
+  // if (!delay_tuned) {
+  //   dt = now_milsecond() - receive_event_unixtime; // 遅延時間
+  //   console.log("再生時間からLoadまでに要した時間 : " + dt);
+  //   buffer(dt);
+  // }
+  // delay_tuned = true;
 
 }
 
@@ -157,7 +172,7 @@ window.onload = function () {
 function buffer(dt) {
   waitTime = dt * 1.5;
   shiftMilisecond = dt + waitTime;
-  player.seekTo(shiftMilisecond / 1000 + videoInfo.targetTime);
+  player.seekTo(shiftMilisecond / 1000 + ahead_time + videoInfo.targetTime);
   player.pauseVideo();
   setTimeout(() => {
     player.playVideo()
