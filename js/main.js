@@ -25,7 +25,7 @@ function onYouTubeIframeAPIReady() {
     playerVars: {
       rel: 0, // 関連動画の有無(default:1)
       showinfo: 0, // 動画情報表示(default:1)
-      controls: 1, // コントロール有無(default:1)
+      controls: 0, // コントロール有無(default:1)
       cc_load_policy: 0, // 字幕有無(1:ON、defaultはユーザー設定)
       iv_load_policy: 3, // アノテーション有無(default:1, 3で無効)
     },
