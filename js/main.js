@@ -148,7 +148,7 @@ function changeScene(opacity, duration) {
 window.onload = function () {
   var os = platform.os.toString().toLowerCase();
   console.log(os);
-  text = null;
+  imageUrl = null;
   if (os.indexOf("windows") !== -1) {
     imageUrl = '../evs/img/announce_windows.png';
   } else if (os.indexOf("os x") !== -1) {
@@ -158,16 +158,11 @@ window.onload = function () {
   }
   // ページ読み込み時に実行したい処理
   Swal.fire({
-    // imageUrl: 'https://github.com/fuwa10/evs/blob/main/img/announce_osx.png?raw=true',
-    imageUrl: '../evs/img/announce_osx.png',
-    // imageAlt: 'HowToUse',
-    // customClass: 'swal-custom',
+    imageUrl: imageUrl,
     confirmButtonColor: "#6C58A3",
     showCloseButton: true,
     grow: "fullscreen",
     showConfirmButton: false,
-
-    // text: text,
   });
 };
 
