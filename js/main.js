@@ -99,7 +99,7 @@ function calDelayAndFixView() {
         player.playVideo()
         changeScene(1, "2s")
       }, testWait)
-    } else { 
+    } else {
       console.log("先読みの再生時間を過ぎました");
       console.log(-1 * testWait);
       buffer(-1 * testWait);
@@ -150,18 +150,24 @@ window.onload = function () {
   console.log(os);
   text = null;
   if (os.indexOf("windows") !== -1) {
-    text = "YouTubeのシークバーの上で Ctrlキー + X";
+    imageUrl = '../evs/img/announce_windows.png';
   } else if (os.indexOf("os x") !== -1) {
-    text = "YouTubeのシークバーの上で controlキー(⌃) + X";
+    imageUrl = '../evs/img/announce_osx.png';
   } else {
-    text = "お使いのOSには対応していません";
+    imageUrl = '../evs/img/announce_windows.png';
   }
   // ページ読み込み時に実行したい処理
   Swal.fire({
-    imageUrl: 'https://github.com/fuwa10/evs/blob/main/img/announce.png?raw=true',
-    imageHeight: 130,
-    imageAlt: 'HowToUse',
-    text: text,
+    // imageUrl: 'https://github.com/fuwa10/evs/blob/main/img/announce_osx.png?raw=true',
+    imageUrl: '../evs/img/announce_osx.png',
+    // imageAlt: 'HowToUse',
+    // customClass: 'swal-custom',
+    confirmButtonColor: "#6C58A3",
+    showCloseButton: true,
+    grow: "fullscreen",
+    showConfirmButton: false,
+
+    // text: text,
   });
 };
 
@@ -178,5 +184,5 @@ function buffer(dt) {
     player.playVideo()
     changeScene(1, "2s")
   }, waitTime)
-  
+
 }

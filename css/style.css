@@ -5,22 +5,28 @@ body {
   margin-bottom: 0;
 }
 
-#player{
+#player {
   position: relative;
   aspect-ratio: 16/9;
-  color: #2196F3; 
+  color: #2196F3;
   font-size: 1px;
-  
-  }
-  .container iframe {
-    position: absolute;
-    width: 100%;
-    height: 100%;
-    border-radius: 8px;
-    pointer-events: none; 
-  }
 
-  #movie_player > div.ytp-chrome-top.ytp-show-cards-title > div.ytp-title > div > a
-  {
-    display: none;
-  }
+}
+
+.container iframe {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  border-radius: 8px;
+  pointer-events: none;
+}
+
+#movie_player>div.ytp-chrome-top.ytp-show-cards-title>div.ytp-title>div>a {
+  display: none;
+}
+
+.swal-custom {
+  /* height: 432; */
+  padding: 0rem;
+  background: #FF646C;
+}
