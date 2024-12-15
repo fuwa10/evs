@@ -1,7 +1,9 @@
 var delay_tuned = true;
 videoInfo = null;
 receive_event_unixtime = 0;
-var ahead_time = 1.3; //先読み(s)
+let ahead_time = 1.3; //先読み(s)
+let bufferCallCount = 0;  // buffer関数の呼び出し回数をカウント
+let prePlayWaitTime = 0;　// 先読み再生タイミングまでの待ち時間を格納する変数
 
 // 2. This code loads the IFrame Player API code asynchronously.
 var tag = document.createElement("script");
@@ -56,6 +58,10 @@ var observer = new MutationObserver(function () {
   videoInfo = JSON.parse(document.getElementById("videoInfo").value);
 
   receive_event_unixtime = videoInfo.systemUnixTime; // 発火時の日時を取得
+
+  // 新しい動画指定が来た時にカウントをリセット
+  resetBufferCallCount();
+
   player.loadVideoById(
     videoInfo.videoId,
     videoInfo.targetTime + ahead_time
@@ -84,9 +90,12 @@ function calDelayAndFixView() {
   if (!delay_tuned) {
     player.pauseVideo();
     testWait = receive_event_unixtime + ahead_time * 1000 - nowMilsecond(); // 送信日時 + 先読み時間 - 現在時刻
+    prePlayWaitTime = testWait;
+    console.log(`先読み再生タイミングまでの待ち時間 prePlayWaitTime: ${prePlayWaitTime}`);
     if (testWait >= 0) {
       setTimeout(() => {
         player.playVideo();
+        resetAnimationOnPlay(); // 動画が再生状態になったときにアニメーションをリセット
       }, testWait)
     } else {
       console.log("先読みの再生時間を過ぎました");
@@ -100,13 +109,38 @@ function calDelayAndFixView() {
  * 再バッファ処理
  */
 function buffer(dt) {
+  bufferCallCount++;  // buffer関数が呼ばれた回数をカウント
+  console.log("Buffer function called:", bufferCallCount, "times");
   waitTime = dt * 1.5;
   shiftMilisecond = dt + waitTime;
   player.seekTo(shiftMilisecond / 1000 + ahead_time + videoInfo.targetTime);
   player.pauseVideo();
   setTimeout(() => {
-    player.playVideo()
+    player.playVideo();
+    resetAnimationOnPlay(); // 動画が再生状態になったときにアニメーションをリセット
   }, waitTime)
+}
+
+/**
+ * 新しい動画指定が来た時にカウントをリセット
+ */
+function resetBufferCallCount() {
+  // bufferCallCountが1以上だった場合、ahead_timeを調整
+  if (bufferCallCount >= 1) {
+    // 動的に倍率を計算してahead_timeを調整
+    const multiplier = calculateMultiplier(ahead_time);
+    ahead_time = ahead_time * multiplier;  // 計算された倍率でahead_timeを調整
+    console.log(`先読み秒数を増加させました。新しい ahead_time: ${ahead_time}, 倍率: ${multiplier}`);
+  }
+
+  if (bufferCallCount === 0 && ahead_time > 1.3 && prePlayWaitTime > 1200) {
+    let multiplier = adjustAheadTimeMultiplier(ahead_time);
+    ahead_time = ahead_time - multiplier;
+    console.log(`先読み秒数を減少させました。新しい ahead_time: ${ahead_time}, 減少秒数: ${multiplier}`);
+  }
+
+  bufferCallCount = 0;
+  console.log("Buffer call count has been reset.");
 }
 
 
@@ -151,11 +185,48 @@ function triggerTransition() {
     overlay.classList.add('active');
   }, 100);  // 少し遅延させてからアニメーションを開始
 
+}
 
-  // アニメーションが完了したらクラスを削除してリセット
-  setTimeout(function () {
-    overlay.style.opacity = 0;
-    box.classList.remove("active");
-    overlay.classList.remove("active");
-  }, 3000); // アニメーションの時間に合わせて
+
+/**
+ * 動画がスタートした時に削除する
+ */
+function resetAnimationOnPlay() {
+  const box = document.querySelector(".box");
+  const overlay = document.querySelector(".overlay");
+
+  // 新しく追加したブラー効果をセット
+  box.classList.remove("active");  // ボックスのアニメーションをリセット
+  overlay.classList.remove("active");  // オーバーレイのアニメーションをリセット
+  box.classList.add("blurToZero"); // ブラーをゼロにするアニメーションをセット
+
+  // 動画がスタートした時点でアニメーションをリセット
+  setTimeout(() => {
+    overlay.style.opacity = 0;  // アニメーションを終了させるために opacity をリセット
+    box.classList.remove("blurToZero"); // ブラーをゼロにするアニメーションをリセット
+  }, 1000);  // 少し遅延させてからアニメーションを開始
+}
+
+// 動的に倍率を計算する関数
+function calculateMultiplier(ahead_time) {
+  // ahead_time が 1.3〜5 の範囲で倍率を 1.5〜1.35 に変化させる
+  const minMultiplier = 1.35;  // 最小倍率
+  const maxMultiplier = 1.7;  // 最大倍率
+
+  // `ahead_time` が 1.3 のときは最大倍率 (1.7)
+  // `ahead_time` が 5 のときは最小倍率 (1.1)
+  let multiplier = maxMultiplier - ((ahead_time - 1.3) / (5 - 1.3)) * (maxMultiplier - minMultiplier);
+
+  // 値が範囲外に出ないように調整
+  multiplier = Math.min(Math.max(multiplier, minMultiplier), maxMultiplier);
+
+  console.log("Calculated multiplier:", multiplier);
+  return multiplier;
+}
+
+// 動的にahead_timeを減少させる関数
+function adjustAheadTimeMultiplier(ahead_time) {
+  // `ahead_time` が 1.3 のとき最大倍率 (0.1)、5 のとき最小倍率 (0.3)
+  let multiplier = 0.1 + (ahead_time - 1.3) * (1 - 0.1) / (5 - 1.3);
+  return Math.max(0.1, Math.min(1, multiplier)); // 0.1 〜 0.3 の範囲内に制限
 }
