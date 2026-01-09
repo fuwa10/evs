@@ -1,20 +1,20 @@
-var delay_tuned = true;
-videoInfo = null;
-receive_event_unixtime = 0;
+let delay_tuned = true;
+let videoInfo = null;
+let receive_event_unixtime = 0;
 let ahead_time = 1.3; //先読み(s)
 let bufferCallCount = 0;  // buffer関数の呼び出し回数をカウント
 let prePlayWaitTime = 0;　// 先読み再生タイミングまでの待ち時間を格納する変数
 
 // 2. This code loads the IFrame Player API code asynchronously.
-var tag = document.createElement("script");
+const tag = document.createElement("script");
 
 tag.src = "https://www.youtube.com/iframe_api";
-var firstScriptTag = document.getElementsByTagName("script")[0];
+const firstScriptTag = document.getElementsByTagName("script")[0];
 firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
 
 // 3. This function creates an <iframe> (and YouTube player)
 //    after the API code downloads.
-var player;
+let player;
 function onYouTubeIframeAPIReady() {
   player = new YT.Player("player", {
     width: "768",
@@ -39,7 +39,7 @@ function onPlayerReady(event) {
   event.target.playVideo();
 }
 
-var done = false;
+let done = false;
 function onPlayerStateChange(event) {
   if (event.data == YT.PlayerState.ENDED) {
     player.playVideo();
@@ -52,7 +52,7 @@ function onPlayerStateChange(event) {
 /**
  * 【VJ側】画面切替
  */
-var observer = new MutationObserver(function () {
+const observer = new MutationObserver(function () {
 
   delay_tuned = false;
   videoInfo = JSON.parse(document.getElementById("videoInfo").value);
@@ -87,23 +87,40 @@ observer.observe(elem, config2);
  * 先読み時刻到達時に再生
  */
 function calDelayAndFixView() {
+  const syncEnabled = videoInfo.syncEnabled !== false; // undefined または true → 同期ON
+
   if (!delay_tuned) {
     player.pauseVideo();
-    testWait = receive_event_unixtime + ahead_time * 1000 - nowMilsecond(); // 送信日時 + 先読み時間 - 現在時刻
+
+    const testWait = receive_event_unixtime + ahead_time * 1000 - nowMilsecond();
     prePlayWaitTime = testWait;
     console.log(`先読み再生タイミングまでの待ち時間 prePlayWaitTime: ${prePlayWaitTime}`);
-    if (testWait >= 0) {
-      setTimeout(() => {
-        player.playVideo();
-        resetAnimationOnPlay(); // 動画が再生状態になったときにアニメーションをリセット
-      }, testWait)
+
+    const playAndReset = () => {
+      player.playVideo();
+      resetAnimationOnPlay();
+    };
+
+    if (syncEnabled) {
+      if (testWait >= 0) {
+        setTimeout(playAndReset, testWait);
+      } else {
+        console.log("先読みの再生時間を過ぎました");
+        // playAndReset();
+        buffer(-1 * testWait); // 必要に応じて使用
+      }
     } else {
-      console.log("先読みの再生時間を過ぎました");
-      buffer(-1 * testWait); // 遅延秒(s)を再バッファ関数に送信
+      console.log("同期OFFのため、即再生します");
+      playAndReset();
     }
+
+    delay_tuned = true;
+  } else if (!syncEnabled) {
+    // delay_tuned 済みでも同期OFFならアニメーションだけリセット
+    resetAnimationOnPlay();
   }
-  delay_tuned = true;
 }
+
 
 /**
  * 再バッファ処理
@@ -111,8 +128,8 @@ function calDelayAndFixView() {
 function buffer(dt) {
   bufferCallCount++;  // buffer関数が呼ばれた回数をカウント
   console.log("Buffer function called:", bufferCallCount, "times");
-  waitTime = dt * 1.5;
-  shiftMilisecond = dt + waitTime;
+  const waitTime = dt * 1.5;
+  const shiftMilisecond = dt + waitTime;
   player.seekTo(shiftMilisecond / 1000 + ahead_time + videoInfo.targetTime);
   player.pauseVideo();
   setTimeout(() => {
@@ -149,14 +166,13 @@ function resetBufferCallCount() {
  * @returns 
  */
 function nowMilsecond() {
-  var date = new Date();
-  return date.getTime();
+  return new Date().getTime();
 }
 
 window.onload = function () {
-  var os = platform.os.toString().toLowerCase();
+  const os = platform.os.toString().toLowerCase();
   console.log(os);
-  imageUrl = null;
+  let imageUrl = null;
   if (os.indexOf("windows") !== -1) {
     imageUrl = '../evs/img/announce_windows.png';
   } else if (os.indexOf("os x") !== -1) {
