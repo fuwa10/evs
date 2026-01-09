@@ -1,6 +1,5 @@
 <!DOCTYPE html>
 <html lang="ja">
-<html>
 
 <head>
   <script src="https://cdn.jsdelivr.net/npm/sweetalert2@8"></script>
@@ -10,18 +9,29 @@
   <link rel="stylesheet" type="text/css" href="css/style.css" />
   <link rel="stylesheet" type="text/css" href="css/sweetalert2.css" />
   <link rel="stylesheet" type="text/css" href="css/FadeDark.css" />
-  <script script src="https://www.gstatic.com/firebasejs/3.6.3/firebase.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/3.6.3/firebase.js"></script>
   <script src="https://code.jquery.com/jquery-3.3.1.js"></script>
   <script src="js/platform.js"></script>
-
-
-
 </head>
 
 <body>
   <canvas id="canvas" style="display:none;"></canvas>
-  <div class="overlay"></div>
-  <div id="player" class="box"></div>
+
+  <!-- Player Container: 2つのプレイヤーを重ねて配置 -->
+  <div id="player-container">
+    <!-- Player A (初期状態で active) -->
+    <div id="player-a-wrapper" class="player-wrapper" style="z-index: 2; opacity: 1;">
+      <div class="overlay"></div>
+      <div id="player-a" class="box"></div>
+    </div>
+
+    <!-- Player B (初期状態で standby) -->
+    <div id="player-b-wrapper" class="player-wrapper" style="z-index: 1; opacity: 0;">
+      <div class="overlay"></div>
+      <div id="player-b" class="box"></div>
+    </div>
+  </div>
+
   <data value="10000" id="videoInfo"></data>
   <script src="js/main.js"></script>
 </body>

@@ -5,12 +5,55 @@ body {
   margin-bottom: 0;
 }
 
-#player {
+/* Player Container: 2つのプレイヤーを重ねて配置 */
+#player-container {
   position: relative;
+  width: 100%;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* 各プレイヤーのラッパー: 絶対配置で重ねる */
+.player-wrapper {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  /* GPU アクセラレーションを有効化 */
+  will-change: opacity;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
+/* 各プレイヤーの .box (YouTube iframe コンテナ) */
+.player-wrapper .box {
+  position: relative;
+  width: 100%;
+  height: 100%;
   aspect-ratio: 16/9;
   color: #2196F3;
   font-size: 1px;
+}
 
+/* 各プレイヤーの .overlay */
+.player-wrapper .overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 10;
+  pointer-events: none;
+}
+
+/* iframe のスタイル */
+.player-wrapper iframe {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  border: none;
+  pointer-events: none;
 }
 
 .container iframe {
@@ -26,7 +69,6 @@ body {
 }
 
 .swal-custom {
-  /* height: 432; */
   padding: 0rem;
   background: #FF646C;
 }
