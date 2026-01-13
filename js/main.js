@@ -346,9 +346,9 @@ class VideoPlayer {
     //   danmaku=0 - コメント非表示
     //   high_quality=1 - 高画質
     //   as_wide=1 - ワイドモード
-    //   muted=1 - ミュート（効くかは不明だが試す）
-    //   播放器UI制御は限定的（クロスオリジン制限）
-    const biliParams = `&autoplay=1&danmaku=0&high_quality=1&as_wide=1&muted=1`;
+    //   muted=1 - ミュート状態で開始
+    //   volume=0 - 音量0で開始（二重保険）
+    const biliParams = `&autoplay=1&danmaku=0&high_quality=1&as_wide=1&muted=1&volume=0`;
     let src;
     if (videoId.startsWith("BV")) {
       src = `//player.bilibili.com/player.html?bvid=${videoId}&page=${page}&t=${Math.floor(startTime)}${biliParams}`;
