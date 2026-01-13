@@ -26,6 +26,30 @@ body {
   backface-visibility: hidden;
 }
 
+/* トランジション制御クラス */
+.player-wrapper.no-transition {
+  transition: none !important;
+}
+
+.player-wrapper.transition-new-video {
+  transition: opacity 6000ms ease;
+}
+
+.player-wrapper.transition-same-video {
+  transition: opacity 4000ms ease;
+}
+
+/* 前面/背面の状態クラス */
+.player-wrapper.player-active {
+  opacity: 1;
+  z-index: 2;
+}
+
+.player-wrapper.player-standby {
+  opacity: 0;
+  z-index: 1;
+}
+
 /* 各プレイヤーの .box (YouTube iframe コンテナ) */
 .player-wrapper .box {
   position: relative;

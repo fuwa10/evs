@@ -1,124 +1,213 @@
 /**
  * EVS - Dual Player Architecture with Adaptive Buffering
- * 通信状況を学習して最適なバッファリングを行う
+ * YouTube / Bilibili 対応
  */
+
+// ========== デバッグ設定 ==========
+const DEBUG = true; // 本番では false に
+
+const log = (...args) => {
+  if (DEBUG) console.log(...args);
+};
+
+const warn = (...args) => {
+  if (DEBUG) console.warn(...args);
+};
+
+const error = (...args) => {
+  console.error(...args); // エラーは常に出力
+};
 
 // ========== トランジション設定 ==========
 const TRANSITION_DURATION_NEW_VIDEO = 6000; // 新しい動画への切り替え時(ms)
 const TRANSITION_DURATION_SAME_VIDEO = 4000; // 同じ動画内での位置変更時(ms)
 const DEFAULT_VIDEO_ID = "Rg6EB9RTHfc";
+const DEFAULT_PLATFORM = "youtube";
 
-// ========== NetworkMonitor: 通信状況の監視・学習 ==========
+// ========== 同期・タイミング設定 ==========
+const SYNC_THRESHOLD_WAIT = 50;       // 同期待機の閾値(ms)
+const SYNC_THRESHOLD_LATE = -100;     // 遅延判定の閾値(ms)
+const BILIBILI_BUFFER_WAIT = 2000;    // Bilibili バッファリング待機(ms)
+const BILIBILI_LOOP_MARGIN = 0.5;     // ループ前の余裕(秒)
+
+// ========== Bilibili iframe スタイル ==========
+const BILIBILI_IFRAME_STYLE = 'position:absolute;top:-14%;left:0;width:100%;height:135%;border:none;z-index:5;';
+
+// ========== ユーティリティ関数 ==========
+const nextFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
+
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// ========== NetworkMonitor: 通信状況の監視・学習（プラットフォーム別） ==========
 const NetworkMonitor = {
-  // ロード時間の履歴（ミリ秒）
-  loadTimes: [],
-  maxSamples: 15, // 直近15回を保持
+  // プラットフォーム別のデータ（キャッシュ付き）
+  platforms: {
+    youtube: { loadTimes: [], lateCount: 0, totalCount: 0, _cache: { valid: false } },
+    bilibili: { loadTimes: [], lateCount: 0, totalCount: 0, _cache: { valid: false } },
+  },
+  maxSamples: 15,
 
-  // 遅延発生の履歴
-  lateCount: 0,
-  totalCount: 0,
-
-  // 設定
+  // プラットフォーム別の設定
   config: {
-    minAheadTime: 0.8,    // 最小先読み時間(秒) - 高速回線用
-    maxAheadTime: 8.0,    // 最大先読み時間(秒) - 低速回線用
-    defaultAheadTime: 1.5, // 初期値
-    safetyMargin: 1.2,    // 安全マージン（標準偏差の倍率）
-    targetSuccessRate: 0.95, // 目標成功率
+    youtube: {
+      minAheadTime: 0.5,
+      maxAheadTime: 5.0,
+      defaultAheadTime: 1.5,
+      safetyMargin: 1.2,
+    },
+    bilibili: {
+      minAheadTime: 2.0,      // Bilibili は遅いので最低2秒
+      maxAheadTime: 15.0,     // 最大15秒まで許容
+      defaultAheadTime: 4.0,  // デフォルト4秒
+      safetyMargin: 1.5,      // 安全マージンも大きめ
+    },
   },
 
-  /**
-   * ロード時間を記録
-   */
-  recordLoadTime(loadTimeMs) {
-    this.loadTimes.push(loadTimeMs);
-    if (this.loadTimes.length > this.maxSamples) {
-      this.loadTimes.shift();
+  getData(platform) {
+    const data = this.platforms[platform] || this.platforms.youtube;
+    if (!data._cache) {
+      data._cache = { valid: false };
     }
-    this.totalCount++;
-    console.log(`[Network] ロード時間記録: ${loadTimeMs}ms (サンプル数: ${this.loadTimes.length})`);
+    return data;
+  },
+
+  getConfig(platform) {
+    return this.config[platform] || this.config.youtube;
   },
 
   /**
-   * 遅延発生を記録
+   * キャッシュを無効化
    */
-  recordLate(lateMs) {
-    this.lateCount++;
-    console.log(`[Network] 遅延発生: ${lateMs}ms (遅延率: ${(this.lateCount / this.totalCount * 100).toFixed(1)}%)`);
+  invalidateCache(platform) {
+    const data = this.getData(platform);
+    data._cache.valid = false;
   },
 
   /**
-   * 平均ロード時間を取得
+   * キャッシュを更新（計算結果を保存）
    */
-  getAverageLoadTime() {
-    if (this.loadTimes.length === 0) {
-      return this.config.defaultAheadTime * 1000;
+  updateCache(platform) {
+    const data = this.getData(platform);
+    const config = this.getConfig(platform);
+
+    if (data.loadTimes.length === 0) {
+      data._cache = {
+        valid: true,
+        avg: config.defaultAheadTime * 1000,
+        stdDev: 0,
+        p95: config.defaultAheadTime * 1000,
+      };
+      return;
     }
-    return this.loadTimes.reduce((a, b) => a + b, 0) / this.loadTimes.length;
-  },
 
-  /**
-   * ロード時間の標準偏差を取得
-   */
-  getStdDev() {
-    if (this.loadTimes.length < 2) return 0;
-    const avg = this.getAverageLoadTime();
-    const squareDiffs = this.loadTimes.map(t => Math.pow(t - avg, 2));
-    return Math.sqrt(squareDiffs.reduce((a, b) => a + b, 0) / this.loadTimes.length);
-  },
+    // 平均値
+    const avg = data.loadTimes.reduce((a, b) => a + b, 0) / data.loadTimes.length;
 
-  /**
-   * 最大ロード時間を取得（外れ値対策で95パーセンタイル）
-   */
-  getPercentileLoadTime(percentile = 0.95) {
-    if (this.loadTimes.length === 0) {
-      return this.config.defaultAheadTime * 1000;
+    // 標準偏差
+    let stdDev = 0;
+    if (data.loadTimes.length >= 2) {
+      const squareDiffs = data.loadTimes.map(t => Math.pow(t - avg, 2));
+      stdDev = Math.sqrt(squareDiffs.reduce((a, b) => a + b, 0) / data.loadTimes.length);
     }
-    const sorted = [...this.loadTimes].sort((a, b) => a - b);
-    const index = Math.floor(sorted.length * percentile);
-    return sorted[Math.min(index, sorted.length - 1)];
+
+    // 95パーセンタイル
+    const sorted = [...data.loadTimes].sort((a, b) => a - b);
+    const index = Math.floor(sorted.length * 0.95);
+    const p95 = sorted[Math.min(index, sorted.length - 1)];
+
+    data._cache = { valid: true, avg, stdDev, p95 };
   },
 
   /**
-   * 推奨される ahead_time を計算（秒）
-   * 戦略: 95パーセンタイルのロード時間 + 安全マージン
+   * キャッシュが有効か確認し、無効なら更新
    */
-  getRecommendedAheadTime() {
-    const { minAheadTime, maxAheadTime, defaultAheadTime, safetyMargin } = this.config;
+  ensureCache(platform) {
+    const data = this.getData(platform);
+    if (!data._cache.valid) {
+      this.updateCache(platform);
+    }
+  },
 
-    if (this.loadTimes.length < 3) {
-      // サンプルが少ない場合はデフォルト値を使用
+  recordLoadTime(platform, loadTimeMs) {
+    const data = this.getData(platform);
+    data.loadTimes.push(loadTimeMs);
+    if (data.loadTimes.length > this.maxSamples) {
+      data.loadTimes.shift();
+    }
+    data.totalCount++;
+    this.invalidateCache(platform); // キャッシュ無効化
+    log(`[Network:${platform}] ロード時間記録: ${loadTimeMs}ms (サンプル数: ${data.loadTimes.length})`);
+  },
+
+  recordLate(platform, lateMs) {
+    const data = this.getData(platform);
+    data.lateCount++;
+    const lateRate = (data.lateCount / data.totalCount * 100).toFixed(1);
+    log(`[Network:${platform}] 遅延発生: ${lateMs}ms (遅延率: ${lateRate}%)`);
+  },
+
+  getAverageLoadTime(platform) {
+    this.ensureCache(platform);
+    return this.getData(platform)._cache.avg;
+  },
+
+  getStdDev(platform) {
+    this.ensureCache(platform);
+    return this.getData(platform)._cache.stdDev;
+  },
+
+  getPercentileLoadTime(platform, percentile = 0.95) {
+    // 0.95 以外のパーセンタイルは都度計算
+    if (percentile !== 0.95) {
+      const data = this.getData(platform);
+      const config = this.getConfig(platform);
+      if (data.loadTimes.length === 0) {
+        return config.defaultAheadTime * 1000;
+      }
+      const sorted = [...data.loadTimes].sort((a, b) => a - b);
+      const index = Math.floor(sorted.length * percentile);
+      return sorted[Math.min(index, sorted.length - 1)];
+    }
+    this.ensureCache(platform);
+    return this.getData(platform)._cache.p95;
+  },
+
+  getRecommendedAheadTime(platform) {
+    const data = this.getData(platform);
+    const config = this.getConfig(platform);
+    const { minAheadTime, maxAheadTime, defaultAheadTime, safetyMargin } = config;
+
+    if (data.loadTimes.length < 3) {
       return defaultAheadTime;
     }
 
-    // 95パーセンタイルのロード時間を基準に
-    const p95LoadTime = this.getPercentileLoadTime(0.95);
-    const stdDev = this.getStdDev();
-
-    // 推奨値 = 95パーセンタイル + (標準偏差 × 安全マージン)
+    const p95LoadTime = this.getPercentileLoadTime(platform, 0.95);
+    const stdDev = this.getStdDev(platform);
     let recommended = (p95LoadTime + stdDev * safetyMargin) / 1000;
 
-    // 遅延が多発している場合は増加
-    if (this.totalCount > 5) {
-      const lateRate = this.lateCount / this.totalCount;
+    if (data.totalCount > 5) {
+      const lateRate = data.lateCount / data.totalCount;
       if (lateRate > 0.1) {
-        // 10%以上遅延している場合、20%増加
         recommended *= 1.2;
-        console.log(`[Network] 遅延率 ${(lateRate * 100).toFixed(1)}% のため ahead_time を増加`);
+        log(`[Network:${platform}] 遅延率 ${(lateRate * 100).toFixed(1)}% のため ahead_time を増加`);
       }
     }
 
-    // 範囲内に収める
     recommended = Math.max(minAheadTime, Math.min(maxAheadTime, recommended));
-
     return recommended;
   },
 
-  /**
-   * 通信品質の評価
-   */
-  getNetworkQuality() {
-    const avg = this.getAverageLoadTime();
+  getNetworkQuality(platform) {
+    const avg = this.getAverageLoadTime(platform);
+    // Bilibili は基準を緩める
+    if (platform === "bilibili") {
+      if (avg < 2000) return "excellent";
+      if (avg < 4000) return "good";
+      if (avg < 6000) return "fair";
+      if (avg < 10000) return "poor";
+      return "bad";
+    }
+    // YouTube
     if (avg < 500) return "excellent";
     if (avg < 1000) return "good";
     if (avg < 2000) return "fair";
@@ -126,31 +215,32 @@ const NetworkMonitor = {
     return "bad";
   },
 
-  /**
-   * 統計情報を出力
-   */
-  printStats() {
-    if (this.loadTimes.length === 0) {
-      console.log("[Network Stats] データなし");
-      return;
-    }
+  printStats(platform = null) {
+    const platforms = platform ? [platform] : ["youtube", "bilibili"];
 
-    const avg = this.getAverageLoadTime();
-    const stdDev = this.getStdDev();
-    const p95 = this.getPercentileLoadTime(0.95);
-    const min = Math.min(...this.loadTimes);
-    const max = Math.max(...this.loadTimes);
-    const quality = this.getNetworkQuality();
-    const recommended = this.getRecommendedAheadTime();
-    const successRate = this.totalCount > 0
-      ? ((this.totalCount - this.lateCount) / this.totalCount * 100).toFixed(1)
-      : 100;
+    platforms.forEach(p => {
+      const data = this.getData(p);
+      if (data.loadTimes.length === 0) {
+        log(`[Network:${p}] データなし`);
+        return;
+      }
 
-    console.log(`
+      const avg = this.getAverageLoadTime(p);
+      const stdDev = this.getStdDev(p);
+      const p95 = this.getPercentileLoadTime(p, 0.95);
+      const min = Math.min(...data.loadTimes);
+      const max = Math.max(...data.loadTimes);
+      const quality = this.getNetworkQuality(p);
+      const recommended = this.getRecommendedAheadTime(p);
+      const successRate = data.totalCount > 0
+        ? ((data.totalCount - data.lateCount) / data.totalCount * 100).toFixed(1)
+        : 100;
+
+      log(`
 ╔════════════════════════════════════════════╗
-║         Network Performance Stats          ║
+║   Network Stats: ${p.toUpperCase().padEnd(24)}║
 ╠════════════════════════════════════════════╣
-║ Quality: ${quality.padEnd(10)} Samples: ${String(this.loadTimes.length).padStart(3)}       ║
+║ Quality: ${quality.padEnd(10)} Samples: ${String(data.loadTimes.length).padStart(3)}       ║
 ╠════════════════════════════════════════════╣
 ║ Load Time (ms)                             ║
 ║   Average: ${String(Math.round(avg)).padStart(6)}   StdDev: ${String(Math.round(stdDev)).padStart(6)}     ║
@@ -159,35 +249,42 @@ const NetworkMonitor = {
 ╠════════════════════════════════════════════╣
 ║ Sync Performance                           ║
 ║   Success Rate: ${successRate.padStart(5)}%                    ║
-║   Late Count: ${String(this.lateCount).padStart(3)} / ${String(this.totalCount).padStart(3)}                   ║
+║   Late Count: ${String(data.lateCount).padStart(3)} / ${String(data.totalCount).padStart(3)}                   ║
 ╠════════════════════════════════════════════╣
 ║ Recommended ahead_time: ${recommended.toFixed(2)}s             ║
 ╚════════════════════════════════════════════╝
-    `);
+      `);
+    });
   },
 };
 
-// ========== VideoPlayer クラス ==========
+// ========== VideoPlayer クラス（YouTube / Bilibili 両対応） ==========
 class VideoPlayer {
   constructor(containerId, index) {
     this.index = index;
     this.containerId = containerId;
-    this.ytPlayer = null;
     this.wrapper = document.getElementById(`${containerId}-wrapper`);
+    this.container = document.getElementById(containerId);
     this.isReady = false;
     this.pendingResolve = null;
     this.videoInfo = null;
-    this.loadStartTime = 0; // ロード開始時刻
+    this.loadStartTime = 0;
+
+    // プラットフォーム別
+    this.platform = null;
+    this.ytPlayer = null;      // YouTube Player
+    this.bilibiliIframe = null; // Bilibili iframe
   }
 
   /**
    * YouTube Player を初期化
    */
-  init(videoId = null) {
+  initYouTube(videoId = null) {
+    this.platform = "youtube";
     return new Promise((resolve) => {
       const config = {
-        width: "768",
-        height: "432",
+        width: "100%",
+        height: "100%",
         events: {
           onReady: (event) => {
             this.isReady = true;
@@ -197,7 +294,7 @@ class VideoPlayer {
             }
             resolve();
           },
-          onStateChange: (event) => this.onStateChange(event),
+          onStateChange: (event) => this.onYouTubeStateChange(event),
         },
         playerVars: {
           rel: 0,
@@ -216,10 +313,176 @@ class VideoPlayer {
   }
 
   /**
-   * 動画をロードして待機状態にする（ロード時間を計測）
+   * Bilibili iframe を作成
    */
-  loadAndWait(videoId, startTime) {
+  createBilibiliIframe(videoId, startTime = 0, page = 1) {
+    // 既存の Bilibili iframe を削除
+    if (this.bilibiliIframe) {
+      this.bilibiliIframe.remove();
+      this.bilibiliIframe = null;
+    }
+
+    // YouTube Player があれば停止
+    if (this.ytPlayer) {
+      try {
+        this.ytPlayer.pauseVideo();
+      } catch (e) {}
+    }
+
+    // wrapper 内の全ての既存 iframe を非表示（YouTube iframe）
+    const existingIframes = this.wrapper.querySelectorAll('iframe');
+    existingIframes.forEach(iframe => {
+      iframe.style.display = 'none';
+      iframe.style.visibility = 'hidden';
+      log(`[Player ${this.index}] Hiding existing iframe for Bilibili`);
+    });
+
+    this.platform = "bilibili";
+
+    // BV形式かAV形式かを判定
+    // Note: Bilibili埋め込みプレイヤーはループ非対応
+    // パラメータ:
+    //   autoplay=1 - 自動再生
+    //   danmaku=0 - コメント非表示
+    //   high_quality=1 - 高画質
+    //   as_wide=1 - ワイドモード
+    //   播放器UI制御は限定的（クロスオリジン制限）
+    const biliParams = `&autoplay=1&danmaku=0&high_quality=1&as_wide=1`;
+    let src;
+    if (videoId.startsWith("BV")) {
+      src = `//player.bilibili.com/player.html?bvid=${videoId}&page=${page}&t=${Math.floor(startTime)}${biliParams}`;
+    } else if (videoId.startsWith("av")) {
+      const aid = videoId.replace("av", "");
+      src = `//player.bilibili.com/player.html?aid=${aid}&page=${page}&t=${Math.floor(startTime)}${biliParams}`;
+    } else {
+      // デフォルトは BV形式として扱う
+      src = `//player.bilibili.com/player.html?bvid=${videoId}&page=${page}&t=${Math.floor(startTime)}${biliParams}`;
+    }
+
+    log(`[Player ${this.index}] Creating Bilibili iframe: ${src}`);
+
+    this.bilibiliIframe = document.createElement('iframe');
+    // Bilibili プレイヤーのUI を隠すため、拡大して上下を画面外に
+    this.bilibiliIframe.style.cssText = BILIBILI_IFRAME_STYLE;
+    this.bilibiliIframe.setAttribute('scrolling', 'no');
+    this.bilibiliIframe.setAttribute('allow', 'autoplay; fullscreen');
+    // src は loadBilibiliAndWait で onload 設定後にセットする
+    this.bilibiliIframe.dataset.src = src;
+
+    // Bilibili からの postMessage を監視（対応していれば）
+    this.setupBilibiliMessageListener();
+
+    return this.bilibiliIframe;
+  }
+
+  /**
+   * Bilibili プレイヤーからの postMessage を監視
+   */
+  setupBilibiliMessageListener() {
+    // 既存のリスナーがあれば削除
+    if (this.bilibiliMessageHandler) {
+      window.removeEventListener('message', this.bilibiliMessageHandler);
+    }
+
+    this.bilibiliMessageHandler = (event) => {
+      // Bilibili からのメッセージのみ処理
+      if (event.origin.includes('bilibili.com')) {
+        log(`[Player ${this.index}] Bilibili message:`, event.data);
+
+        // 動画終了を検知できたらループ
+        if (event.data && (event.data.event === 'ended' || event.data.type === 'ended')) {
+          log(`[Player ${this.index}] Bilibili video ended, restarting...`);
+          this.restartBilibili();
+        }
+      }
+    };
+
+    window.addEventListener('message', this.bilibiliMessageHandler);
+  }
+
+  /**
+   * Bilibili 動画を最初から再生し直す
+   */
+  restartBilibili() {
+    if (this.bilibiliIframe && this.bilibiliIframe.dataset.src) {
+      // t=0 にして再読み込み
+      const src = this.bilibiliIframe.dataset.src.replace(/&t=\d+/, '&t=0');
+      this.bilibiliIframe.src = src;
+      log(`[Player ${this.index}] Bilibili restarted from beginning`);
+    }
+  }
+
+  /**
+   * YouTube の状態変化を処理
+   */
+  onYouTubeStateChange(event) {
+    if (event.data === YT.PlayerState.PLAYING && this.pendingResolve) {
+      const loadTime = Date.now() - this.loadStartTime;
+      NetworkMonitor.recordLoadTime("youtube", loadTime);
+
+      if (this.ytPlayer) {
+        try {
+          this.ytPlayer.pauseVideo();
+        } catch (e) {
+          warn(`[Player ${this.index}] pauseVideo error in stateChange:`, e);
+        }
+      }
+      const resolver = this.pendingResolve;
+      this.pendingResolve = null;
+      resolver(loadTime);
+      return;
+    }
+
+    if (event.data === YT.PlayerState.ENDED) {
+      if (this.ytPlayer) {
+        try {
+          this.ytPlayer.playVideo();
+        } catch (e) {
+          warn(`[Player ${this.index}] playVideo error in stateChange:`, e);
+        }
+      }
+    }
+  }
+
+  /**
+   * 動画をロードして待機状態にする
+   */
+  loadAndWait(videoInfo) {
     this.loadStartTime = Date.now();
+    const platform = videoInfo.platform || "youtube";
+    const videoId = videoInfo.videoId;
+    const startTime = videoInfo.targetTime + (videoInfo.aheadTime || 0);
+    const page = videoInfo.page || 1;
+
+    if (platform === "youtube") {
+      return this.loadYouTubeAndWait(videoId, startTime);
+    } else if (platform === "bilibili") {
+      return this.loadBilibiliAndWait(videoId, startTime, page);
+    }
+
+    return Promise.resolve();
+  }
+
+  /**
+   * YouTube 動画をロード
+   */
+  loadYouTubeAndWait(videoId, startTime) {
+    // Bilibili iframe があれば削除
+    if (this.bilibiliIframe) {
+      this.bilibiliIframe.remove();
+      this.bilibiliIframe = null;
+    }
+
+    // YouTube Player の iframe を表示（非表示になっていた場合）
+    // YouTube API が container を置き換えるので wrapper から検索
+    const ytIframe = this.wrapper.querySelector('iframe');
+    if (ytIframe) {
+      ytIframe.style.display = '';
+      ytIframe.style.visibility = 'visible';
+      log(`[Player ${this.index}] YouTube iframe restored`);
+    }
+
+    this.platform = "youtube";
 
     return new Promise((resolve) => {
       this.pendingResolve = resolve;
@@ -230,56 +493,89 @@ class VideoPlayer {
         });
         this.ytPlayer.mute();
       } catch (e) {
-        console.warn(`[Player ${this.index}] loadAndWait error:`, e);
-        resolve(); // エラー時も続行
+        warn(`[Player ${this.index}] loadYouTubeAndWait error:`, e);
+        resolve();
       }
     });
   }
 
   /**
-   * プレイヤーの状態変化を処理
+   * Bilibili 動画をロード
+   * Note: クロスオリジンのため onload イベントが発火しないことがある
+   *       そのため固定の待機時間を使用
    */
-  onStateChange(event) {
-    // ロード中のプレイヤーが再生可能になったら resolve
-    if (event.data === YT.PlayerState.PLAYING && this.pendingResolve) {
-      // ロード時間を計測・記録
-      const loadTime = Date.now() - this.loadStartTime;
-      NetworkMonitor.recordLoadTime(loadTime);
+  loadBilibiliAndWait(videoId, startTime, page) {
+    return new Promise((resolve) => {
+      const iframe = this.createBilibiliIframe(videoId, startTime, page);
 
-      this.ytPlayer.pauseVideo();
-      const resolver = this.pendingResolve;
-      this.pendingResolve = null;
-      resolver(loadTime);
-      return;
-    }
+      // DOM に追加（wrapper に追加）
+      this.wrapper.appendChild(iframe);
 
-    // 動画終了時はリプレイ
-    if (event.data === YT.PlayerState.ENDED) {
-      this.ytPlayer.playVideo();
-    }
+      // src をセット（これでロード開始）
+      iframe.src = iframe.dataset.src;
+      log(`[Player ${this.index}] Bilibili iframe src set`);
+
+      // Bilibili はクロスオリジンのため onload が発火しないことがある
+      // 固定時間待ってから続行（バッファリング時間）
+      setTimeout(() => {
+        const loadTime = Date.now() - this.loadStartTime;
+        NetworkMonitor.recordLoadTime("bilibili", loadTime);
+        log(`[Player ${this.index}] Bilibili ready (waited ${loadTime}ms)`);
+        resolve(loadTime);
+      }, BILIBILI_BUFFER_WAIT);
+    });
   }
 
   /**
    * 再生開始
    */
   play() {
-    try {
-      this.ytPlayer.mute();
-      this.ytPlayer.playVideo();
-    } catch (e) {
-      console.warn(`[Player ${this.index}] play error:`, e);
+    if (this.platform === "youtube" && this.ytPlayer) {
+      try {
+        this.ytPlayer.mute();
+        this.ytPlayer.playVideo();
+      } catch (e) {
+        warn(`[Player ${this.index}] YouTube play error:`, e);
+      }
     }
+    // Bilibili は autoplay=1 で自動再生されるので何もしない
   }
 
   /**
    * 停止
    */
   stop() {
-    try {
-      this.ytPlayer.pauseVideo();
-      this.ytPlayer.mute();
-    } catch (e) {
-      console.warn(`[Player ${this.index}] stop error:`, e);
+    log(`[Player ${this.index}] stop() called`);
+
+    // YouTube Player を停止・非表示
+    if (this.ytPlayer) {
+      try {
+        this.ytPlayer.pauseVideo();
+        this.ytPlayer.mute();
+      } catch (e) {
+        warn(`[Player ${this.index}] YouTube stop error:`, e);
+      }
+    }
+
+    // wrapper 内の全ての iframe を非表示（YouTube API が container を置き換えるため wrapper を使用）
+    const iframes = this.wrapper.querySelectorAll('iframe');
+    iframes.forEach((iframe, i) => {
+      iframe.style.display = 'none';
+      iframe.style.visibility = 'hidden';
+      log(`[Player ${this.index}] iframe ${i} hidden (src: ${iframe.src?.substring(0, 50)}...)`);
+    });
+
+    // Bilibili iframe があれば削除
+    if (this.bilibiliIframe) {
+      this.bilibiliIframe.remove();
+      this.bilibiliIframe = null;
+    }
+
+    // メモリリーク対策: Bilibili message listener を削除
+    if (this.bilibiliMessageHandler) {
+      window.removeEventListener('message', this.bilibiliMessageHandler);
+      this.bilibiliMessageHandler = null;
+      log(`[Player ${this.index}] Bilibili message listener removed`);
     }
   }
 
@@ -287,6 +583,8 @@ class VideoPlayer {
    * 表示（前面に出す）
    */
   show() {
+    this.wrapper.classList.remove('player-standby');
+    this.wrapper.classList.add('player-active');
     this.wrapper.style.opacity = "1";
     this.wrapper.style.zIndex = "2";
   }
@@ -295,19 +593,48 @@ class VideoPlayer {
    * 非表示（背面に下げる）
    */
   hide() {
+    this.wrapper.classList.remove('player-active');
+    this.wrapper.classList.add('player-standby');
     this.wrapper.style.opacity = "0";
     this.wrapper.style.zIndex = "1";
   }
 
   /**
-   * シーク
+   * トランジションを無効化
+   */
+  disableTransition() {
+    this.wrapper.classList.add('no-transition');
+    this.wrapper.classList.remove('transition-new-video', 'transition-same-video');
+    this.wrapper.style.transition = "none";
+  }
+
+  /**
+   * トランジションを設定
+   * @param {boolean} isSameVideo - 同じ動画かどうか
+   */
+  setTransition(isSameVideo) {
+    this.wrapper.classList.remove('no-transition');
+    if (isSameVideo) {
+      this.wrapper.classList.add('transition-same-video');
+      this.wrapper.classList.remove('transition-new-video');
+    } else {
+      this.wrapper.classList.add('transition-new-video');
+      this.wrapper.classList.remove('transition-same-video');
+    }
+  }
+
+  /**
+   * シーク（YouTube のみ）
    */
   seekTo(seconds) {
-    try {
-      this.ytPlayer.seekTo(seconds, true);
-    } catch (e) {
-      console.warn(`[Player ${this.index}] seekTo error:`, e);
+    if (this.platform === "youtube" && this.ytPlayer) {
+      try {
+        this.ytPlayer.seekTo(seconds, true);
+      } catch (e) {
+        warn(`[Player ${this.index}] seekTo error:`, e);
+      }
     }
+    // Bilibili は seekTo 非対応
   }
 }
 
@@ -317,7 +644,9 @@ const PlayerManager = {
   activeIndex: 0,
   isTransitioning: false,
   switchCount: 0,
-  lastVideoId: null, // 前回の動画ID
+  lastVideoId: null,
+  lastPlatform: null,
+  bilibiliLoopTimer: null, // Bilibili 自動ループ用タイマー
 
   get active() {
     return this.players[this.activeIndex];
@@ -327,30 +656,25 @@ const PlayerManager = {
     return this.players[1 - this.activeIndex];
   },
 
-  /**
-   * 2つのプレイヤーを初期化
-   */
   async init() {
     this.players = [
       new VideoPlayer("player-a", 0),
       new VideoPlayer("player-b", 1),
     ];
 
-    await this.players[0].init(DEFAULT_VIDEO_ID);
+    // 両方の YouTube Player を初期化
+    await this.players[0].initYouTube(DEFAULT_VIDEO_ID);
     this.players[0].show();
 
-    await this.players[1].init(null);
+    await this.players[1].initYouTube(null);
     this.players[1].hide();
 
-    console.log("PlayerManager initialized with dual players");
+    log("PlayerManager initialized with dual players (YouTube/Bilibili support)");
   },
 
-  /**
-   * 次の動画に切り替え（クロスフェード）
-   */
   async switchTo(videoInfo) {
     if (this.isTransitioning) {
-      console.log("トランジション中のため、リクエストをスキップします");
+      log("トランジション中のため、リクエストをスキップします");
       return;
     }
 
@@ -361,123 +685,191 @@ const PlayerManager = {
     const next = this.standby;
     const current = this.active;
 
-    // 適応的に ahead_time を取得
-    const ahead_time = NetworkMonitor.getRecommendedAheadTime();
+    const platform = videoInfo.platform || "youtube";
+    const ahead_time = NetworkMonitor.getRecommendedAheadTime(platform);
 
-    // 同じ動画かどうかを判定してトランジション時間を決定
-    const isSameVideo = this.lastVideoId === videoInfo.videoId;
+    // 同じ動画かどうかを判定
+    const isSameVideo = this.lastVideoId === videoInfo.videoId && this.lastPlatform === platform;
     const transitionDuration = isSameVideo ? TRANSITION_DURATION_SAME_VIDEO : TRANSITION_DURATION_NEW_VIDEO;
 
-    console.log(`\n[Switch #${switchId}] ========================================`);
-    console.log(`[Switch #${switchId}] Active: Player ${current.index} → Standby: Player ${next.index}`);
-    console.log(`[Switch #${switchId}] Video: ${videoInfo.videoId} ${isSameVideo ? '(同じ動画)' : '(新しい動画)'}`);
-    console.log(`[Switch #${switchId}] targetTime: ${videoInfo.targetTime.toFixed(2)}s`);
-    console.log(`[Switch #${switchId}] ahead_time: ${ahead_time.toFixed(2)}s (adaptive)`);
-    console.log(`[Switch #${switchId}] トランジション: ${transitionDuration}ms`);
+    log(`\n[Switch #${switchId}] ========================================`);
+    log(`[Switch #${switchId}] Platform: ${platform}`);
+    log(`[Switch #${switchId}] Active: Player ${current.index} → Standby: Player ${next.index}`);
+    log(`[Switch #${switchId}] Video: ${videoInfo.videoId} ${isSameVideo ? '(同じ動画)' : '(新しい動画)'}`);
+    log(`[Switch #${switchId}] targetTime: ${videoInfo.targetTime.toFixed(2)}s`);
+    log(`[Switch #${switchId}] ahead_time: ${ahead_time.toFixed(2)}s (adaptive)`);
+    log(`[Switch #${switchId}] トランジション: ${transitionDuration}ms`);
 
     const requestTime = Date.now();
 
     try {
-      // 1. 裏でロード（先読み時間を加算）
+      // 1. 裏でロード
       const loadStartTime = Date.now();
-      await next.loadAndWait(videoInfo.videoId, videoInfo.targetTime + ahead_time);
+      const loadInfo = {
+        ...videoInfo,
+        aheadTime: ahead_time,
+      };
+      await next.loadAndWait(loadInfo);
       const actualLoadTime = Date.now() - loadStartTime;
 
-      console.log(`[Switch #${switchId}] ロード完了: ${actualLoadTime}ms`);
+      log(`[Switch #${switchId}] ロード完了: ${actualLoadTime}ms`);
 
-      // 2. 同期タイミングを計算
+      // 2. 同期タイミングを計算（YouTube のみ）
       const syncEnabled = videoInfo.syncEnabled !== false;
       const targetPlayTime = videoInfo.systemUnixTime + ahead_time * 1000;
       const now = Date.now();
       const timeToTarget = targetPlayTime - now;
 
-      console.log(`[Switch #${switchId}] 同期: ${syncEnabled ? 'ON' : 'OFF'}, 残り時間: ${timeToTarget}ms`);
+      log(`[Switch #${switchId}] 同期: ${syncEnabled ? 'ON' : 'OFF'}, 残り時間: ${timeToTarget}ms`);
 
-      // 3. 同期処理
-      if (syncEnabled) {
-        if (timeToTarget > 50) {
-          // 余裕がある：待機してから再生
-          console.log(`[Switch #${switchId}] ${timeToTarget}ms 待機...`);
-          await this.sleep(timeToTarget);
-        } else if (timeToTarget < -100) {
-          // 遅れている：再生位置を調整
+      // 3. 同期処理（YouTube のみ）
+      if (syncEnabled && platform === "youtube") {
+        if (timeToTarget > SYNC_THRESHOLD_WAIT) {
+          log(`[Switch #${switchId}] ${timeToTarget}ms 待機...`);
+          await sleep(timeToTarget);
+        } else if (timeToTarget < SYNC_THRESHOLD_LATE) {
           const lateMs = Math.abs(timeToTarget);
           const lateSeconds = lateMs / 1000;
           const adjustedTime = videoInfo.targetTime + ahead_time + lateSeconds;
 
-          console.log(`[Switch #${switchId}] ⚠️ ${lateMs}ms 遅延 → ${adjustedTime.toFixed(2)}s にシーク`);
+          log(`[Switch #${switchId}] ⚠️ ${lateMs}ms 遅延 → ${adjustedTime.toFixed(2)}s にシーク`);
           next.seekTo(adjustedTime);
-          NetworkMonitor.recordLate(lateMs);
+          NetworkMonitor.recordLate(platform, lateMs);
         }
-        // -100ms〜50ms は許容範囲
       }
 
-      // 4. 旧プレイヤーを背面に移動（先にやる）
+      // 4. 旧プレイヤーを背面に移動
       current.wrapper.style.zIndex = "1";
 
-      // 5. 次のプレイヤーを準備（確実に opacity: 0 から開始）
-      next.wrapper.style.transition = "none";
+      // 5. 次のプレイヤーを準備（トランジション無効で初期状態にセット）
+      next.disableTransition();
       next.wrapper.style.opacity = "0";
       next.wrapper.style.zIndex = "2";
 
       // 6. 強制リフロー
       void next.wrapper.offsetHeight;
 
-      // デバッグ: 両プレイヤーの状態を確認
-      console.log(`[Switch #${switchId}] 準備完了:`);
-      console.log(`  current(${current.index}): opacity=${current.wrapper.style.opacity}, z=${current.wrapper.style.zIndex}`);
-      console.log(`  next(${next.index}): opacity=${next.wrapper.style.opacity}, z=${next.wrapper.style.zIndex}`);
+      log(`[Switch #${switchId}] 準備完了:`);
+      log(`  current(${current.index}): opacity=${current.wrapper.style.opacity}, z=${current.wrapper.style.zIndex}`);
+      log(`  next(${next.index}): opacity=${next.wrapper.style.opacity}, z=${next.wrapper.style.zIndex}`);
 
-      // 7. 再生開始（トランジション前に再生を開始しておく）
+      // 7. 再生開始
       next.play();
 
       // 8. 次フレームで transition を設定
-      await new Promise(resolve => requestAnimationFrame(resolve));
+      await nextFrame();
+      next.setTransition(isSameVideo);
       next.wrapper.style.transition = `opacity ${transitionDuration}ms ease`;
 
       // 9. さらに次フレームで opacity を変更
-      await new Promise(resolve => requestAnimationFrame(resolve));
-      console.log(`[Switch #${switchId}] トランジション開始: opacity 0 → 1 (${transitionDuration}ms)`);
+      await nextFrame();
+      log(`[Switch #${switchId}] トランジション開始: opacity 0 → 1 (${transitionDuration}ms)`);
       next.wrapper.style.opacity = "1";
 
       // 10. トランジション完了を待つ
-      await this.sleep(transitionDuration);
+      await sleep(transitionDuration);
 
-      // 11. 旧プレイヤー停止 & 非表示（トランジション完了後）
+      // 11. 旧プレイヤー停止 & 非表示
       current.stop();
-      current.wrapper.style.transition = "none";
-      current.wrapper.style.opacity = "0";
-      current.wrapper.style.zIndex = "1";
+      current.disableTransition();
+      current.hide();
 
-      // 12. 役割交代 & 動画ID記録
+      // 12. 役割交代
       this.activeIndex = 1 - this.activeIndex;
       this.lastVideoId = videoInfo.videoId;
+      this.lastPlatform = platform;
 
       const totalTime = Date.now() - requestTime;
-      console.log(`[Switch #${switchId}] ✓ 完了 (総時間: ${totalTime}ms)`);
+      log(`[Switch #${switchId}] ✓ 完了 (総時間: ${totalTime}ms)`);
 
-      // 5回ごとに統計を出力
+      // 13. Bilibili 自動ループの設定
+      // 実際の開始位置と経過時間を考慮
+      const actualStartTime = videoInfo.targetTime + ahead_time;
+      const elapsedDuringSwitch = (Date.now() - requestTime) / 1000;
+      this.setupBilibiliAutoLoop(videoInfo, platform, actualStartTime, elapsedDuringSwitch);
+
       if (this.switchCount % 5 === 0) {
-        NetworkMonitor.printStats();
+        NetworkMonitor.printStats(platform);
       }
 
-    } catch (error) {
-      console.error(`[Switch #${switchId}] エラー:`, error);
+    } catch (err) {
+      error(`[Switch #${switchId}] エラー:`, err);
     } finally {
       this.isTransitioning = false;
     }
   },
 
   /**
-   * 指定ミリ秒待機
+   * Bilibili 自動ループの設定
+   * @param {Object} videoInfo - 動画情報
+   * @param {string} platform - プラットフォーム
+   * @param {number} actualStartTime - 実際の開始位置（aheadTime込み）
+   * @param {number} elapsedDuringSwitch - スイッチ処理中に経過した時間（秒）
    */
-  sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+  setupBilibiliAutoLoop(videoInfo, platform, actualStartTime = null, elapsedDuringSwitch = 0) {
+    // 既存のタイマーをクリア
+    if (this.bilibiliLoopTimer) {
+      clearTimeout(this.bilibiliLoopTimer);
+      this.bilibiliLoopTimer = null;
+    }
+
+    // Bilibili 以外は何もしない
+    if (platform !== "bilibili") {
+      return;
+    }
+
+    // duration がない場合は何もしない
+    const duration = videoInfo.duration;
+    if (!duration || duration <= 0) {
+      log(`[AutoLoop] duration が不明のため自動ループ無効`);
+      return;
+    }
+
+    // 実際の開始位置（指定がなければ targetTime を使用）
+    const startPosition = actualStartTime !== null ? actualStartTime : (videoInfo.targetTime || 0);
+
+    // 残り再生時間を計算（スイッチ処理中の経過時間を引く）
+    const remainingTime = duration - startPosition - elapsedDuringSwitch;
+
+    if (remainingTime <= 0) {
+      log(`[AutoLoop] 残り時間が0以下のためスキップ (duration=${duration}, start=${startPosition}, elapsed=${elapsedDuringSwitch})`);
+      return;
+    }
+
+    // 残り時間（ミリ秒）+ 少し余裕を持たせる
+    const loopDelay = (remainingTime + BILIBILI_LOOP_MARGIN) * 1000;
+
+    log(`[AutoLoop] Bilibili 自動ループ設定: ${remainingTime.toFixed(1)}秒後 (duration=${duration}s, startPos=${startPosition.toFixed(1)}s, elapsed=${elapsedDuringSwitch.toFixed(1)}s)`);
+
+    // 次回ループ用にdurationを保存
+    this.lastBilibiliDuration = duration;
+
+    this.bilibiliLoopTimer = setTimeout(() => {
+      log(`[AutoLoop] Bilibili 動画終了 → 最初から再生`);
+      const activePlayer = this.active;
+      if (activePlayer && activePlayer.platform === "bilibili") {
+        activePlayer.restartBilibili();
+
+        // 再度ループを設定（最初から再生なので duration 分待つ）
+        this.setupBilibiliAutoLoop({
+          ...videoInfo,
+          targetTime: 0,
+        }, "bilibili", 0, 0);
+      }
+    }, loopDelay);
   },
 
   /**
-   * トランジション完了を待つ
+   * Bilibili 自動ループを停止
    */
+  cancelBilibiliAutoLoop() {
+    if (this.bilibiliLoopTimer) {
+      clearTimeout(this.bilibiliLoopTimer);
+      this.bilibiliLoopTimer = null;
+      log(`[AutoLoop] Bilibili 自動ループ解除`);
+    }
+  },
+
   waitTransitionEnd(element) {
     return new Promise((resolve) => {
       const handler = () => {
@@ -485,7 +877,7 @@ const PlayerManager = {
         resolve();
       };
       element.addEventListener("transitionend", handler);
-      setTimeout(resolve, TRANSITION_DURATION + 100);
+      setTimeout(resolve, TRANSITION_DURATION_NEW_VIDEO + 100);
     });
   },
 };
@@ -508,14 +900,18 @@ function onYouTubeIframeAPIReady() {
 function setupVideoInfoObserver() {
   const elem = document.getElementById("videoInfo");
   if (!elem) {
-    console.error("videoInfo element not found");
+    error("videoInfo element not found");
     return;
   }
 
   const observer = new MutationObserver(() => {
-    const videoInfo = JSON.parse(elem.value);
-    console.log("videoInfo changed:", videoInfo);
-    PlayerManager.switchTo(videoInfo);
+    try {
+      const videoInfo = JSON.parse(elem.value);
+      log("videoInfo changed:", videoInfo);
+      PlayerManager.switchTo(videoInfo);
+    } catch (e) {
+      error("videoInfo parse error:", e);
+    }
   });
 
   observer.observe(elem, {
@@ -525,7 +921,7 @@ function setupVideoInfoObserver() {
     characterData: false,
   });
 
-  console.log("videoInfo observer started");
+  log("videoInfo observer started");
 }
 
 // ========== 初期化時のダイアログ ==========
@@ -553,5 +949,8 @@ window.onload = function () {
 window.EVS = {
   NetworkMonitor,
   PlayerManager,
-  printStats: () => NetworkMonitor.printStats(),
+  printStats: (platform) => NetworkMonitor.printStats(platform),
+  // 便利メソッド
+  youtubeStats: () => NetworkMonitor.printStats("youtube"),
+  bilibiliStats: () => NetworkMonitor.printStats("bilibili"),
 };

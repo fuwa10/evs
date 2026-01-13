@@ -1,1 +1,4 @@
 .vscode/settings.json
+ex-evs/
+.claude/
+.DS_Store
