@@ -346,8 +346,9 @@ class VideoPlayer {
     //   danmaku=0 - コメント非表示
     //   high_quality=1 - 高画質
     //   as_wide=1 - ワイドモード
+    //   muted=1 - ミュート（効くかは不明だが試す）
     //   播放器UI制御は限定的（クロスオリジン制限）
-    const biliParams = `&autoplay=1&danmaku=0&high_quality=1&as_wide=1`;
+    const biliParams = `&autoplay=1&danmaku=0&high_quality=1&as_wide=1&muted=1`;
     let src;
     if (videoId.startsWith("BV")) {
       src = `//player.bilibili.com/player.html?bvid=${videoId}&page=${page}&t=${Math.floor(startTime)}${biliParams}`;
@@ -366,6 +367,9 @@ class VideoPlayer {
     this.bilibiliIframe.style.cssText = BILIBILI_IFRAME_STYLE;
     this.bilibiliIframe.setAttribute('scrolling', 'no');
     this.bilibiliIframe.setAttribute('allow', 'autoplay; fullscreen');
+    // ミュート強制（効くかは環境依存だが試す）
+    this.bilibiliIframe.setAttribute('muted', '');
+    this.bilibiliIframe.muted = true;
     // src は loadBilibiliAndWait で onload 設定後にセットする
     this.bilibiliIframe.dataset.src = src;
 
