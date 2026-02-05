@@ -18,6 +18,164 @@ const error = (...args) => {
   console.error(...args); // エラーは常に出力
 };
 
+// ========== エラーロギングシステム（モンキーテスト用） ==========
+const ErrorLogger = {
+  logs: [],
+  maxLogs: 1000, // 最大ログ数
+
+  /**
+   * エラーを記録
+   */
+  record(type, message, details = null) {
+    const entry = {
+      timestamp: new Date().toISOString(),
+      time: Date.now(),
+      type: type,
+      message: String(message),
+      details: details,
+      url: window.location.href,
+      userAgent: navigator.userAgent,
+    };
+
+    this.logs.push(entry);
+
+    // 最大数を超えたら古いものを削除
+    if (this.logs.length > this.maxLogs) {
+      this.logs.shift();
+    }
+
+    // localStorageにも保存（ページリロード対策）
+    try {
+      localStorage.setItem('evs_error_logs', JSON.stringify(this.logs));
+    } catch (e) {
+      console.warn('localStorage保存失敗:', e);
+    }
+
+    console.error(`[ErrorLogger] ${type}: ${message}`, details);
+  },
+
+  /**
+   * ログをすべて取得
+   */
+  getAll() {
+    return this.logs;
+  },
+
+  /**
+   * ログをクリア
+   */
+  clear() {
+    this.logs = [];
+    try {
+      localStorage.removeItem('evs_error_logs');
+    } catch (e) {}
+    console.log('[ErrorLogger] ログをクリアしました');
+  },
+
+  /**
+   * ログをコンソールに表示
+   */
+  print() {
+    console.log(`========== Error Logs (${this.logs.length} entries) ==========`);
+    this.logs.forEach((entry, index) => {
+      console.log(`[${index + 1}] ${entry.timestamp} - ${entry.type}:`, entry.message);
+      if (entry.details) {
+        console.log('  Details:', entry.details);
+      }
+    });
+  },
+
+  /**
+   * ログをJSON形式でダウンロード
+   */
+  download() {
+    const data = JSON.stringify(this.logs, null, 2);
+    const blob = new Blob([data], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `evs-error-logs-${Date.now()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    console.log('[ErrorLogger] ログをダウンロードしました');
+  },
+
+  /**
+   * 統計情報を表示
+   */
+  stats() {
+    const typeCount = {};
+    this.logs.forEach(entry => {
+      typeCount[entry.type] = (typeCount[entry.type] || 0) + 1;
+    });
+    console.log('========== Error Statistics ==========');
+    console.log(`Total: ${this.logs.length}`);
+    Object.entries(typeCount).forEach(([type, count]) => {
+      console.log(`  ${type}: ${count}`);
+    });
+  },
+
+  /**
+   * localStorageからログを復元
+   */
+  restore() {
+    try {
+      const saved = localStorage.getItem('evs_error_logs');
+      if (saved) {
+        this.logs = JSON.parse(saved);
+        console.log(`[ErrorLogger] ${this.logs.length}件のログを復元しました`);
+      }
+    } catch (e) {
+      console.warn('[ErrorLogger] ログ復元失敗:', e);
+    }
+  },
+};
+
+// 起動時にログを復元
+ErrorLogger.restore();
+
+// グローバルエラーをキャプチャ
+window.addEventListener('error', (event) => {
+  ErrorLogger.record(
+    'uncaught_error',
+    event.message,
+    {
+      filename: event.filename,
+      lineno: event.lineno,
+      colno: event.colno,
+      error: event.error ? {
+        name: event.error.name,
+        message: event.error.message,
+        stack: event.error.stack,
+      } : null,
+    }
+  );
+});
+
+// Promise の reject をキャプチャ
+window.addEventListener('unhandledrejection', (event) => {
+  ErrorLogger.record(
+    'unhandled_rejection',
+    event.reason,
+    {
+      promise: String(event.promise),
+      reason: event.reason ? {
+        message: event.reason.message,
+        stack: event.reason.stack,
+      } : null,
+    }
+  );
+});
+
+// console.error をオーバーライド（元の動作も保持）
+const originalConsoleError = console.error;
+console.error = function(...args) {
+  ErrorLogger.record('console_error', args.join(' '), { args: args });
+  originalConsoleError.apply(console, args);
+};
+
 // ========== トランジション設定 ==========
 const TRANSITION_DURATION_NEW_VIDEO = 6000; // 新しい動画への切り替え時(ms)
 const TRANSITION_DURATION_SAME_VIDEO = 4000; // 同じ動画内での位置変更時(ms)
@@ -470,7 +628,7 @@ class VideoPlayer {
   /**
    * YouTube 動画をロード
    */
-  loadYouTubeAndWait(videoId, startTime) {
+  async loadYouTubeAndWait(videoId, startTime) {
     // Bilibili iframe があれば削除
     if (this.bilibiliIframe) {
       this.bilibiliIframe.remove();
@@ -484,12 +642,23 @@ class VideoPlayer {
       ytIframe.style.display = '';
       ytIframe.style.visibility = 'visible';
       log(`[Player ${this.index}] YouTube iframe restored`);
+
+      // iframe復元後、レンダリング完了を待つ
+      await nextFrame();
     }
 
     this.platform = "youtube";
 
     return new Promise((resolve) => {
       this.pendingResolve = resolve;
+
+      // YouTube Playerの存在確認
+      if (!this.ytPlayer) {
+        warn(`[Player ${this.index}] ytPlayer not initialized`);
+        resolve();
+        return;
+      }
+
       try {
         this.ytPlayer.loadVideoById({
           videoId: videoId,
@@ -651,6 +820,7 @@ const PlayerManager = {
   lastVideoId: null,
   lastPlatform: null,
   bilibiliLoopTimer: null, // Bilibili 自動ループ用タイマー
+  pendingRequest: null, // トランジション中に来たリクエストを保存
 
   get active() {
     return this.players[this.activeIndex];
@@ -678,7 +848,9 @@ const PlayerManager = {
 
   async switchTo(videoInfo) {
     if (this.isTransitioning) {
-      log("トランジション中のため、リクエストをスキップします");
+      // トランジション中は最新のリクエストを保存
+      this.pendingRequest = videoInfo;
+      log("トランジション中のため、リクエストを保存します（トランジション完了後に処理）");
       return;
     }
 
@@ -690,7 +862,14 @@ const PlayerManager = {
     const current = this.active;
 
     const platform = videoInfo.platform || "youtube";
-    const ahead_time = NetworkMonitor.getRecommendedAheadTime(platform);
+    const syncEnabled = videoInfo.syncEnabled !== false;
+    const base_ahead_time = NetworkMonitor.getRecommendedAheadTime(platform);
+
+    // syncEnabled=falseの場合、ahead_timeを短縮（低速環境用の最小限の余裕）
+    let ahead_time = base_ahead_time;
+    if (!syncEnabled) {
+      ahead_time = Math.min(base_ahead_time, 1.0); // 最大1秒に制限
+    }
 
     // 同じ動画かどうかを判定
     const isSameVideo = this.lastVideoId === videoInfo.videoId && this.lastPlatform === platform;
@@ -701,7 +880,7 @@ const PlayerManager = {
     log(`[Switch #${switchId}] Active: Player ${current.index} → Standby: Player ${next.index}`);
     log(`[Switch #${switchId}] Video: ${videoInfo.videoId} ${isSameVideo ? '(同じ動画)' : '(新しい動画)'}`);
     log(`[Switch #${switchId}] targetTime: ${videoInfo.targetTime.toFixed(2)}s`);
-    log(`[Switch #${switchId}] ahead_time: ${ahead_time.toFixed(2)}s (adaptive)`);
+    log(`[Switch #${switchId}] ahead_time: ${ahead_time.toFixed(2)}s${!syncEnabled && ahead_time < base_ahead_time ? ` (同期OFF: ${base_ahead_time.toFixed(2)}s→短縮)` : ' (adaptive)'}`);
     log(`[Switch #${switchId}] トランジション: ${transitionDuration}ms`);
 
     const requestTime = Date.now();
@@ -718,16 +897,15 @@ const PlayerManager = {
 
       log(`[Switch #${switchId}] ロード完了: ${actualLoadTime}ms`);
 
-      // 2. 同期タイミングを計算（YouTube のみ）
-      const syncEnabled = videoInfo.syncEnabled !== false;
+      // 2. 同期タイミングを計算
       const targetPlayTime = videoInfo.systemUnixTime + ahead_time * 1000;
       const now = Date.now();
       const timeToTarget = targetPlayTime - now;
 
       log(`[Switch #${switchId}] 同期: ${syncEnabled ? 'ON' : 'OFF'}, 残り時間: ${timeToTarget}ms`);
 
-      // 3. 同期処理（YouTube のみ）
-      if (syncEnabled && platform === "youtube") {
+      // 3. 同期処理（YouTube/Bilibili 共通）
+      if (syncEnabled) {
         if (timeToTarget > SYNC_THRESHOLD_WAIT) {
           log(`[Switch #${switchId}] ${timeToTarget}ms 待機...`);
           await sleep(timeToTarget);
@@ -800,6 +978,14 @@ const PlayerManager = {
       error(`[Switch #${switchId}] エラー:`, err);
     } finally {
       this.isTransitioning = false;
+
+      // トランジション完了後、保存されたリクエストがあれば即座に処理
+      if (this.pendingRequest) {
+        const pending = this.pendingRequest;
+        this.pendingRequest = null;
+        log("保存されたリクエストを処理します");
+        this.switchTo(pending);
+      }
     }
   },
 
@@ -934,11 +1120,11 @@ window.onload = function () {
   const os = platform.os.toString().toLowerCase();
   let imageUrl = null;
   if (os.indexOf("windows") !== -1) {
-    imageUrl = "../evs/img/announce_windows.png";
+    imageUrl = "img/announce_windows.png";
   } else if (os.indexOf("os x") !== -1) {
-    imageUrl = "../evs/img/announce_osx.png";
+    imageUrl = "img/announce_osx.png";
   } else {
-    imageUrl = "../evs/img/announce_windows.png";
+    imageUrl = "img/announce_windows.png";
   }
   Swal.fire({
     imageUrl: imageUrl,
@@ -953,8 +1139,14 @@ window.onload = function () {
 window.EVS = {
   NetworkMonitor,
   PlayerManager,
+  ErrorLogger,
   printStats: (platform) => NetworkMonitor.printStats(platform),
   // 便利メソッド
   youtubeStats: () => NetworkMonitor.printStats("youtube"),
   bilibiliStats: () => NetworkMonitor.printStats("bilibili"),
+  // エラーログ用便利メソッド
+  errors: () => ErrorLogger.print(),
+  errorStats: () => ErrorLogger.stats(),
+  downloadErrors: () => ErrorLogger.download(),
+  clearErrors: () => ErrorLogger.clear(),
 };
