@@ -18,6 +18,9 @@ const error = (...args) => {
   console.error(...args); // エラーは常に出力
 };
 
+// console.error の元の参照を保持（ErrorLogger.record 内で使用）
+const originalConsoleError = console.error;
+
 // ========== エラーロギングシステム（モンキーテスト用） ==========
 const ErrorLogger = {
   logs: [],
@@ -51,7 +54,7 @@ const ErrorLogger = {
       console.warn('localStorage保存失敗:', e);
     }
 
-    console.error(`[ErrorLogger] ${type}: ${message}`, details);
+    originalConsoleError(`[ErrorLogger] ${type}: ${message}`, details);
   },
 
   /**
@@ -170,7 +173,6 @@ window.addEventListener('unhandledrejection', (event) => {
 });
 
 // console.error をオーバーライド（元の動作も保持）
-const originalConsoleError = console.error;
 console.error = function(...args) {
   ErrorLogger.record('console_error', args.join(' '), { args: args });
   originalConsoleError.apply(console, args);
@@ -453,6 +455,14 @@ class VideoPlayer {
             resolve();
           },
           onStateChange: (event) => this.onYouTubeStateChange(event),
+          onError: (event) => {
+            warn(`[Player ${this.index}] YouTube Player error: code=${event.data}`);
+            if (this.pendingResolve) {
+              const resolver = this.pendingResolve;
+              this.pendingResolve = null;
+              resolver(0);
+            }
+          },
         },
         playerVars: {
           rel: 0,
@@ -652,10 +662,29 @@ class VideoPlayer {
     return new Promise((resolve) => {
       this.pendingResolve = resolve;
 
+      // 15秒タイムアウト: 動画が再生不可の場合にPromiseが永久ハングするのを防止
+      const timeout = setTimeout(() => {
+        if (this.pendingResolve) {
+          warn(`[Player ${this.index}] loadYouTubeAndWait タイムアウト (15s)`);
+          const resolver = this.pendingResolve;
+          this.pendingResolve = null;
+          resolver(0);
+        }
+      }, 15000);
+
+      // タイムアウトをクリアするようresolveをラップ
+      const originalResolve = resolve;
+      this.pendingResolve = (value) => {
+        clearTimeout(timeout);
+        originalResolve(value);
+      };
+
       // YouTube Playerの存在確認
       if (!this.ytPlayer) {
         warn(`[Player ${this.index}] ytPlayer not initialized`);
-        resolve();
+        clearTimeout(timeout);
+        this.pendingResolve = null;
+        originalResolve();
         return;
       }
 
@@ -667,7 +696,9 @@ class VideoPlayer {
         this.ytPlayer.mute();
       } catch (e) {
         warn(`[Player ${this.index}] loadYouTubeAndWait error:`, e);
-        resolve();
+        clearTimeout(timeout);
+        this.pendingResolve = null;
+        originalResolve();
       }
     });
   }
@@ -1076,6 +1107,13 @@ const PlayerManager = {
 
 const tag = document.createElement("script");
 tag.src = "https://www.youtube.com/iframe_api";
+tag.onerror = () => {
+  error("YouTube IFrame API の読み込みに失敗しました");
+  const msg = document.createElement("div");
+  msg.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);color:#fff;background:rgba(0,0,0,0.85);padding:2em 3em;border-radius:12px;font-size:1.5em;z-index:9999;text-align:center;";
+  msg.textContent = "YouTube API 読み込み失敗 - ページを再読み込みしてください";
+  document.body.appendChild(msg);
+};
 const firstScriptTag = document.getElementsByTagName("script")[0];
 firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
 
