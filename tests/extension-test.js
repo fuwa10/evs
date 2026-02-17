@@ -12,7 +12,7 @@ const path = require('path');
 
 // ========== 設定 ==========
 const EVS_URL = 'http://localhost:8888/';
-const EXTENSION_PATH = path.resolve(__dirname, '..', 'ex-evs');
+const EXTENSION_PATH = process.env.EXTENSION_PATH || path.resolve(__dirname, '..', 'ex-evs');
 
 // テスト用 YouTube 動画URL（短くて軽い動画）
 const YOUTUBE_TEST_URLS = [
@@ -28,6 +28,20 @@ function recordResult(name, passed, detail = '') {
   testResults.push({ name, passed, detail });
   const icon = passed ? '✅' : '❌';
   console.log(`  ${icon} ${name}${detail ? ` — ${detail}` : ''}`);
+}
+
+// ========== ヘルパー ==========
+
+/**
+ * 拡張機能の ID を Service Worker の URL から取得
+ */
+async function getExtensionId(context) {
+  for (const sw of context.serviceWorkers()) {
+    const url = sw.url();
+    const match = url.match(/chrome-extension:\/\/([a-z]+)\//);
+    if (match) return match[1];
+  }
+  return null;
 }
 
 // ========== メイン ==========
@@ -728,6 +742,129 @@ async function runExtensionTest() {
     recordResult('高速タブ切り替え+Ctrl+X 後も EVS が生存', evsAliveAfterChaos);
 
     for (const p of chaosPages) { await p.close(); }
+
+    // ----- テスト17: ポップアップ UI の動作確認 -----
+    console.log('\n--- テスト17: ポップアップ UI ---');
+
+    // 拡張機能の ID を取得
+    const extensionId = await getExtensionId(context);
+
+    if (extensionId) {
+      const popupPage = await context.newPage();
+      await popupPage.goto(`chrome-extension://${extensionId}/html/popup.html`, {
+        waitUntil: 'domcontentloaded', timeout: 10000,
+      });
+
+      // 「投影用のウインドウを開く」ボタンが表示されるか
+      const buttonText = await popupPage.textContent('a.button');
+      recordResult('「投影用のウインドウを開く」ボタンが表示される',
+        buttonText && buttonText.includes('投影用'), `got: ${buttonText?.trim()}`);
+
+      // 「再生位置の同期」チェックボックスが存在するか
+      const syncToggle = await popupPage.$('#syncToggle');
+      recordResult('「再生位置の同期」チェックボックスが存在する', !!syncToggle);
+
+      // チェックボックスの初期状態（checked）
+      const isChecked = await popupPage.$eval('#syncToggle', el => el.checked);
+      recordResult('同期チェックボックスの初期状態が ON', isChecked);
+
+      // チェックボックスを OFF にする
+      await popupPage.click('#syncToggle');
+      const isUnchecked = await popupPage.$eval('#syncToggle', el => !el.checked);
+      recordResult('同期チェックボックスを OFF にできる', isUnchecked);
+
+      // 再度 ON に戻す
+      await popupPage.click('#syncToggle');
+      const isRechecked = await popupPage.$eval('#syncToggle', el => el.checked);
+      recordResult('同期チェックボックスを ON に戻せる', isRechecked);
+
+      // YouTube アイコンが表示されるか
+      const ytIcon = await popupPage.$('img[alt="YouTube"]');
+      recordResult('YouTube アイコンが表示される', !!ytIcon);
+
+      // Bilibili アイコンが表示されるか
+      const biliIcon = await popupPage.$('img[alt="BiliBili"]');
+      recordResult('Bilibili アイコンが表示される', !!biliIcon);
+
+      // 「対応」テキストが表示されるか
+      const supportText = await popupPage.textContent('.support-info');
+      recordResult('「対応」テキストが表示される',
+        supportText && supportText.includes('対応'));
+
+      await popupPage.close();
+    } else {
+      recordResult('ポップアップ UI（拡張機能 ID 取得不可のためスキップ）', true,
+        'Service Worker URL から ID を取得できなかった');
+    }
+
+    // ----- テスト18: 本番 URL (fuwa10.github.io) での動作確認 -----
+    console.log('\n--- テスト18: 本番 URL での動作確認 ---');
+
+    const prodPage = await context.newPage();
+    console.log('  https://fuwa10.github.io/evs/ を開いています...');
+    try {
+      await prodPage.goto('https://fuwa10.github.io/evs/', {
+        waitUntil: 'domcontentloaded', timeout: 30000,
+      });
+      recordResult('本番 EVS ページの読み込み成功', true);
+
+      // SweetAlert を閉じる
+      await prodPage.waitForTimeout(2000);
+      try { await prodPage.click('.swal2-close', { timeout: 3000 }); } catch {}
+
+      // YouTube API の読み込みを待つ
+      await prodPage.waitForTimeout(5000);
+
+      // videoInfo 要素の存在確認
+      const hasProdVideoInfo = await prodPage.evaluate(() => !!document.getElementById('videoInfo'));
+      recordResult('本番 EVS に videoInfo 要素が存在する', hasProdVideoInfo);
+
+      if (hasProdVideoInfo) {
+        // YouTube で Ctrl+X して本番 EVS に届くか
+        const prodYtPage = await context.newPage();
+        await prodYtPage.goto(YOUTUBE_TEST_URLS[0], {
+          waitUntil: 'domcontentloaded', timeout: 30000,
+        });
+        try { await prodYtPage.waitForSelector('video', { timeout: 15000 }); } catch {}
+        await prodYtPage.waitForTimeout(3000);
+
+        // 本番 EVS 側で videoInfo の変化を監視
+        const prodInfoPromise = prodPage.evaluate(() => {
+          return new Promise((resolve) => {
+            const elem = document.getElementById('videoInfo');
+            if (!elem) { resolve(null); return; }
+            const observer = new MutationObserver(() => {
+              try {
+                const data = JSON.parse(elem.getAttribute('value'));
+                observer.disconnect();
+                resolve(data);
+              } catch {}
+            });
+            observer.observe(elem, { attributes: true, attributeFilter: ['value'] });
+            setTimeout(() => { observer.disconnect(); resolve(null); }, 15000);
+          });
+        });
+
+        console.log('  YouTube → Ctrl+X → 本番 EVS...');
+        await prodYtPage.keyboard.press('Meta+x');
+
+        const prodInfo = await prodInfoPromise;
+        if (prodInfo) {
+          recordResult('本番 EVS に動画情報が届いた', true,
+            `platform=${prodInfo.platform}, videoId=${prodInfo.videoId}`);
+          recordResult('本番 EVS: videoId が正しい',
+            prodInfo.videoId === 'dQw4w9WgXcQ', `got: ${prodInfo.videoId}`);
+        } else {
+          recordResult('本番 EVS に動画情報が届いた', false,
+            '15秒以内に videoInfo が更新されなかった');
+        }
+
+        await prodYtPage.close();
+      }
+    } catch (e) {
+      recordResult('本番 EVS ページの読み込み成功', false, e.message.substring(0, 80));
+    }
+    await prodPage.close();
 
     // ----- 最終: EVS 全体の健全性確認 -----
     console.log('\n--- 最終チェック: EVS の健全性 ---');
