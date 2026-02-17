@@ -1,0 +1,11 @@
+{
+  "name": "evs",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test:monkey": "node tests/monkey-test.js"
+  },
+  "devDependencies": {
+    "playwright": "^1.50.0"
+  }
+}

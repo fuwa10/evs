@@ -6,6 +6,9 @@
 // ========== デバッグ設定 ==========
 const DEBUG = true; // 本番では false に
 
+// console.error オーバーライド前に参照を保持（ErrorLogger 内で使用）
+const originalConsoleError = console.error;
+
 const log = (...args) => {
   if (DEBUG) console.log(...args);
 };
@@ -51,7 +54,7 @@ const ErrorLogger = {
       console.warn('localStorage保存失敗:', e);
     }
 
-    console.error(`[ErrorLogger] ${type}: ${message}`, details);
+    originalConsoleError(`[ErrorLogger] ${type}: ${message}`, details);
   },
 
   /**
@@ -170,7 +173,6 @@ window.addEventListener('unhandledrejection', (event) => {
 });
 
 // console.error をオーバーライド（元の動作も保持）
-const originalConsoleError = console.error;
 console.error = function(...args) {
   ErrorLogger.record('console_error', args.join(' '), { args: args });
   originalConsoleError.apply(console, args);
@@ -453,6 +455,7 @@ class VideoPlayer {
             resolve();
           },
           onStateChange: (event) => this.onYouTubeStateChange(event),
+          onError: (event) => this.onYouTubeError(event),
         },
         playerVars: {
           rel: 0,
@@ -575,6 +578,23 @@ class VideoPlayer {
   }
 
   /**
+   * YouTube のエラーを処理
+   * エラーコード: 2=無効なパラメータ, 5=HTML5エラー, 100=動画なし, 101/150=埋め込み不可
+   */
+  onYouTubeError(event) {
+    const errorCodes = { 2: '無効なパラメータ', 5: 'HTML5エラー', 100: '動画が見つからない', 101: '埋め込み不可', 150: '埋め込み不可' };
+    const msg = errorCodes[event.data] || `不明なエラー(${event.data})`;
+    warn(`[Player ${this.index}] YouTube エラー: ${msg}`);
+
+    // pendingResolve があれば解決して次に進む
+    if (this.pendingResolve) {
+      const resolver = this.pendingResolve;
+      this.pendingResolve = null;
+      resolver(-1);
+    }
+  }
+
+  /**
    * YouTube の状態変化を処理
    */
   onYouTubeStateChange(event) {
@@ -655,9 +675,26 @@ class VideoPlayer {
       // YouTube Playerの存在確認
       if (!this.ytPlayer) {
         warn(`[Player ${this.index}] ytPlayer not initialized`);
+        this.pendingResolve = null;
         resolve();
         return;
       }
+
+      // 10秒タイムアウト（動画が読み込めない場合のデッドロック防止）
+      const timeout = setTimeout(() => {
+        if (this.pendingResolve) {
+          warn(`[Player ${this.index}] YouTube ロードタイムアウト (10s)`);
+          this.pendingResolve = null;
+          resolve(-1);
+        }
+      }, 10000);
+
+      // 正常解決時にタイムアウトをクリアするようラップ
+      const originalResolve = resolve;
+      this.pendingResolve = (value) => {
+        clearTimeout(timeout);
+        originalResolve(value);
+      };
 
       try {
         this.ytPlayer.loadVideoById({
@@ -666,7 +703,9 @@ class VideoPlayer {
         });
         this.ytPlayer.mute();
       } catch (e) {
+        clearTimeout(timeout);
         warn(`[Player ${this.index}] loadYouTubeAndWait error:`, e);
+        this.pendingResolve = null;
         resolve();
       }
     });
@@ -862,6 +901,7 @@ const PlayerManager = {
     const current = this.active;
 
     const platform = videoInfo.platform || "youtube";
+    const targetTime = Number(videoInfo.targetTime) || 0;
     const syncEnabled = videoInfo.syncEnabled !== false;
     const base_ahead_time = NetworkMonitor.getRecommendedAheadTime(platform);
 
@@ -871,6 +911,9 @@ const PlayerManager = {
       ahead_time = Math.min(base_ahead_time, 1.0); // 最大1秒に制限
     }
 
+    // videoInfo.targetTime を正規化
+    videoInfo.targetTime = targetTime;
+
     // 同じ動画かどうかを判定
     const isSameVideo = this.lastVideoId === videoInfo.videoId && this.lastPlatform === platform;
     const transitionDuration = isSameVideo ? TRANSITION_DURATION_SAME_VIDEO : TRANSITION_DURATION_NEW_VIDEO;
@@ -879,7 +922,7 @@ const PlayerManager = {
     log(`[Switch #${switchId}] Platform: ${platform}`);
     log(`[Switch #${switchId}] Active: Player ${current.index} → Standby: Player ${next.index}`);
     log(`[Switch #${switchId}] Video: ${videoInfo.videoId} ${isSameVideo ? '(同じ動画)' : '(新しい動画)'}`);
-    log(`[Switch #${switchId}] targetTime: ${videoInfo.targetTime.toFixed(2)}s`);
+    log(`[Switch #${switchId}] targetTime: ${targetTime.toFixed(2)}s`);
     log(`[Switch #${switchId}] ahead_time: ${ahead_time.toFixed(2)}s${!syncEnabled && ahead_time < base_ahead_time ? ` (同期OFF: ${base_ahead_time.toFixed(2)}s→短縮)` : ' (adaptive)'}`);
     log(`[Switch #${switchId}] トランジション: ${transitionDuration}ms`);
 
@@ -1076,6 +1119,12 @@ const PlayerManager = {
 
 const tag = document.createElement("script");
 tag.src = "https://www.youtube.com/iframe_api";
+tag.onerror = () => {
+  error("[EVS] YouTube IFrame API の読み込みに失敗しました。ページをリロードしてください。");
+  document.body.style.background = "#000";
+  document.body.innerHTML = '<div style="color:#fff;font-size:24px;text-align:center;margin-top:40vh;">'
+    + 'YouTube API の読み込みに失敗しました<br><button onclick="location.reload()" style="margin-top:20px;padding:10px 20px;font-size:18px;cursor:pointer;">リロード</button></div>';
+};
 const firstScriptTag = document.getElementsByTagName("script")[0];
 firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
 

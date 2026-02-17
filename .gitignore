@@ -2,3 +2,5 @@
 ex-evs/
 .claude/
 .DS_Store
+docs/
+node_modules/
