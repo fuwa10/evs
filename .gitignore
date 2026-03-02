@@ -1,7 +1,22 @@
-.vscode/settings.json
-ex-evs/
+# IDE / OS
+.vscode/
+**/.DS_Store
+
+# Claude Code
 .claude/
-.DS_Store
-docs/
+**/CLAUDE.md
+
+# Dependencies
 node_modules/
+
+# Build output
 dist/
+
+# Design assets (not needed for GitHub Pages)
+img/ai_extract/
+
+# Extension source (separate repo)
+ex-evs/
+
+# Docs (local only)
+docs/

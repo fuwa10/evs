@@ -96,3 +96,13 @@ body {
   padding: 0rem;
   background: #FF646C;
 }
+
+.swal-custom .swal2-content {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+.swal-custom .swal2-content > div {
+  height: 100%;
+}

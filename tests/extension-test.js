@@ -11,7 +11,7 @@ const { chromium } = require('playwright');
 const path = require('path');
 
 // ========== 設定 ==========
-const EVS_URL = 'http://localhost:8888/';
+const EVS_URL = process.env.EVS_URL || 'http://localhost:8888/';
 const EXTENSION_PATH = process.env.EXTENSION_PATH || path.resolve(__dirname, '..', 'ex-evs');
 
 // テスト用 YouTube 動画URL（短くて軽い動画）

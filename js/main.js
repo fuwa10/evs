@@ -4,7 +4,7 @@
  */
 
 // ========== デバッグ設定 ==========
-const DEBUG = true; // 本番では false に
+const DEBUG = false;
 
 // console.error オーバーライド前に参照を保持（ErrorLogger 内で使用）
 const originalConsoleError = console.error;
@@ -24,7 +24,30 @@ const error = (...args) => {
 // ========== エラーロギングシステム（モンキーテスト用） ==========
 const ErrorLogger = {
   logs: [],
-  maxLogs: 1000, // 最大ログ数
+  maxLogs: 200, // 最大ログ数（低スペック環境向けに削減）
+  _saveTimer: null,
+  _saveCount: 0,
+
+  /**
+   * localStorageへの保存（デバウンス：5秒間まとめて1回、10件ごと）
+   */
+  _scheduleSave() {
+    this._saveCount++;
+    if (this._saveTimer) return;
+    this._saveTimer = setTimeout(() => {
+      this._saveTimer = null;
+      this._saveCount = 0;
+      try {
+        localStorage.setItem('evs_error_logs', JSON.stringify(this.logs));
+      } catch (e) {
+        // localStorage full の場合は古いログを半分削除してリトライ
+        this.logs = this.logs.slice(this.logs.length >> 1);
+        try {
+          localStorage.setItem('evs_error_logs', JSON.stringify(this.logs));
+        } catch (_) {}
+      }
+    }, 5000);
+  },
 
   /**
    * エラーを記録
@@ -47,12 +70,8 @@ const ErrorLogger = {
       this.logs.shift();
     }
 
-    // localStorageにも保存（ページリロード対策）
-    try {
-      localStorage.setItem('evs_error_logs', JSON.stringify(this.logs));
-    } catch (e) {
-      console.warn('localStorage保存失敗:', e);
-    }
+    // localStorageにも保存（デバウンスで負荷軽減）
+    this._scheduleSave();
 
     originalConsoleError(`[ErrorLogger] ${type}: ${message}`, details);
   },
@@ -197,6 +216,11 @@ const BILIBILI_IFRAME_STYLE = 'position:absolute;top:-14%;left:0;width:100%;heig
 const nextFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+function writePlaybackStatus(obj) {
+  const el = document.getElementById("playbackStatus");
+  if (el) el.value = JSON.stringify(obj);
+}
 
 // ========== NetworkMonitor: 通信状況の監視・学習（プラットフォーム別） ==========
 const NetworkMonitor = {
@@ -586,6 +610,9 @@ class VideoPlayer {
     const msg = errorCodes[event.data] || `不明なエラー(${event.data})`;
     warn(`[Player ${this.index}] YouTube エラー: ${msg}`);
 
+    const errorType = (event.data === 101 || event.data === 150) ? "embed_blocked" : "load_failed";
+    writePlaybackStatus({ status: "error", videoId: "", platform: "youtube", timestamp: Date.now(), errorType });
+
     // pendingResolve があれば解決して次に進む
     if (this.pendingResolve) {
       const resolver = this.pendingResolve;
@@ -935,10 +962,12 @@ const PlayerManager = {
         ...videoInfo,
         aheadTime: ahead_time,
       };
+      writePlaybackStatus({ status: "loading", videoId: videoInfo.videoId, platform, timestamp: Date.now() });
       await next.loadAndWait(loadInfo);
       const actualLoadTime = Date.now() - loadStartTime;
 
       log(`[Switch #${switchId}] ロード完了: ${actualLoadTime}ms`);
+      writePlaybackStatus({ status: "syncing", videoId: videoInfo.videoId, platform, timestamp: Date.now() });
 
       // 2. 同期タイミングを計算
       const targetPlayTime = videoInfo.systemUnixTime + ahead_time * 1000;
@@ -980,6 +1009,7 @@ const PlayerManager = {
 
       // 7. 再生開始
       next.play();
+      writePlaybackStatus({ status: "transitioning", videoId: videoInfo.videoId, platform, timestamp: Date.now(), transitionDuration });
 
       // 8. 次フレームで transition を設定
       await nextFrame();
@@ -1006,6 +1036,7 @@ const PlayerManager = {
 
       const totalTime = Date.now() - requestTime;
       log(`[Switch #${switchId}] ✓ 完了 (総時間: ${totalTime}ms)`);
+      writePlaybackStatus({ status: "done", videoId: videoInfo.videoId, platform, timestamp: Date.now() });
 
       // 13. Bilibili 自動ループの設定
       // 実際の開始位置と経過時間を考慮
@@ -1019,6 +1050,7 @@ const PlayerManager = {
 
     } catch (err) {
       error(`[Switch #${switchId}] エラー:`, err);
+      writePlaybackStatus({ status: "error", videoId: videoInfo.videoId, platform, timestamp: Date.now(), errorType: "switch_error" });
     } finally {
       this.isTransitioning = false;
 
@@ -1165,24 +1197,101 @@ function setupVideoInfoObserver() {
 
 // ========== 初期化時のダイアログ ==========
 
-window.onload = function () {
+function getAnnounceImage() {
   const os = platform.os.toString().toLowerCase();
-  let imageUrl = null;
-  if (os.indexOf("windows") !== -1) {
-    imageUrl = "img/announce_windows.png";
-  } else if (os.indexOf("os x") !== -1) {
-    imageUrl = "img/announce_osx.png";
+  if (os.indexOf("windows") !== -1) return "img/announce_windows.png";
+  if (os.indexOf("os x") !== -1) return "img/announce_osx.png";
+  return "img/announce_windows.png";
+}
+
+// F キーでフルスクリーントグル
+function toggleFullscreen() {
+  if (!document.fullscreenElement) {
+    document.documentElement.requestFullscreen().catch((e) => {
+      warn("フルスクリーン切替失敗:", e);
+    });
   } else {
-    imageUrl = "img/announce_windows.png";
+    document.exitFullscreen();
   }
+}
+
+function showAnnounce() {
   Swal.fire({
-    imageUrl: imageUrl,
-    confirmButtonColor: "#6C58A3",
+    imageUrl: getAnnounceImage(),
+    html: `
+      <div data-msgbox style="
+        position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
+        background:rgba(255,255,255,0.9);
+        border-radius:12px; padding:24px 32px 16px;
+        box-shadow:0 4px 20px rgba(0,0,0,0.25);
+        display:flex; flex-direction:column; align-items:center; gap:12px;
+        z-index:10;
+      ">
+        <button onclick="this.closest('[data-msgbox]').style.display='none'" style="
+          position:absolute; top:6px; right:8px;
+          background:none; border:none; cursor:pointer;
+          font-size:18px; color:#999; line-height:1;
+        ">&#x2716;</button>
+        <div style="display:flex; gap:8px;">
+          <button onclick="toggleFullscreen();Swal.close()" style="
+            padding:8px 14px; font-size:12px; font-weight:bold; white-space:nowrap;
+            color:#fff; background:#E8527A; border:none; border-radius:6px;
+            cursor:pointer; box-shadow:0 2px 6px rgba(0,0,0,0.2);
+          ">&#x26F6; フルスクリーン</button>
+          <button onclick="this.closest('[data-msgbox]').style.display='none'" style="
+            padding:8px 14px; font-size:12px; font-weight:bold; white-space:nowrap;
+            color:#fff; background:#6C58A3; border:none; border-radius:6px;
+            cursor:pointer; box-shadow:0 2px 6px rgba(0,0,0,0.2);
+          ">&#x1F4D6; 説明を見る</button>
+        </div>
+        <div style="color:#555; font-size:11px; text-align:center; line-height:1.6; margin-top:4px; border-top:1px solid rgba(0,0,0,0.1); padding-top:8px;">
+          ショートカットキーも使えます<br>
+          <span><b>F</b> フルスクリーン</span> ／ <span><b>ESC</b> この説明表示を閉じる</span>
+        </div>
+      </div>
+    `,
     showCloseButton: true,
     grow: "fullscreen",
     showConfirmButton: false,
+    customClass: "swal-custom",
+    padding: "0",
+    allowEscapeKey: true,
+    onOpen: () => {
+      document.addEventListener("keydown", announceKeyHandler, true);
+    },
+    onClose: () => {
+      document.removeEventListener("keydown", announceKeyHandler, true);
+    },
   });
+}
+
+function announceKeyHandler(e) {
+  if (e.key === "f" || e.key === "F") {
+    toggleFullscreen();
+    Swal.close();
+  }
+  if (e.key === "Escape") {
+    Swal.close();
+  }
+}
+
+window.onload = function () {
+  showAnnounce();
 };
+
+// H キーで使い方を再表示 / F キーでフルスクリーン
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+  // SweetAlert2 が開いてる時はスキップ（announceKeyHandler が処理する）
+  if (Swal.isVisible()) return;
+
+  if (e.key === "h" || e.key === "H") {
+    showAnnounce();
+  }
+  if (e.key === "f" || e.key === "F") {
+    toggleFullscreen();
+  }
+});
 
 // ========== デバッグ用グローバルアクセス ==========
 window.EVS = {
